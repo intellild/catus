@@ -1,4 +1,5 @@
 mod explorer_view;
+mod explorer_view_item;
 
 use gpui::*;
 use gpui_component::*;
