@@ -14,15 +14,15 @@ use crate::explorer_view_item::ExplorerViewItem;
 /// 文件树查看器视图
 pub struct ExplorerView {
     /// 存储每个路径对应的文件节点信息
-    file_nodes: HashMap<PathBuf, FileNode>,
+    pub file_nodes: HashMap<PathBuf, FileNode>,
     /// 当前根目录
-    root_path: PathBuf,
+    pub root_path: PathBuf,
     /// 扁平化的项目列表（用于 VirtualList）
-    flat_items: Vec<ExplorerViewItem>,
+    pub flat_items: Vec<ExplorerViewItem>,
     /// 滚动句柄
-    scroll_handle: VirtualListScrollHandle,
+    pub scroll_handle: VirtualListScrollHandle,
     /// 选中项的索引
-    selected_index: Option<usize>,
+    pub selected_index: Option<usize>,
 }
 
 /// 表示文件或目录的元数据
@@ -79,7 +79,7 @@ impl ExplorerView {
     }
 
     /// 加载指定目录的内容
-    fn load_directory(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+    pub fn load_directory(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         if self.file_nodes.get(path).map(|n| n.loaded).unwrap_or(false) {
             return;
         }

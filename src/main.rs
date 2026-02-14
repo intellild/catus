@@ -1,9 +1,12 @@
 mod explorer_view;
 mod explorer_view_item;
+mod tab;
+mod terminal_view;
+mod workspace;
 
 use gpui::*;
 use gpui_component::*;
-use explorer_view::ExplorerView;
+use workspace::Workspace;
 
 fn main() {
     let app = Application::new().with_assets(gpui_component_assets::Assets);
@@ -12,22 +15,32 @@ fn main() {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
 
-        cx.spawn(async move |cx| {
-            cx.open_window(
-                WindowOptions {
-                    focus: true,
-                    show: true,
-                    ..WindowOptions::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| ExplorerView::new(window, cx));
-                    // This first level on the window, should be a Root.
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )?;
+        // 注册键盘快捷键
+        cx.bind_keys([
+            KeyBinding::new("ctrl-t", workspace::workspace::NewTerminal, Some("Workspace")),
+            KeyBinding::new("ctrl-shift-e", workspace::workspace::NewFileExplorer, Some("Workspace")),
+            KeyBinding::new("ctrl-w", workspace::workspace::CloseActiveTab, Some("Workspace")),
+            KeyBinding::new("ctrl-tab", workspace::workspace::NextTab, Some("Workspace")),
+            KeyBinding::new("ctrl-shift-tab", workspace::workspace::PrevTab, Some("Workspace")),
+        ]);
 
-            Ok::<_, anyhow::Error>(())
-        })
-        .detach();
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1200.0), px(800.0)),
+                    cx,
+                ))),
+                focus: true,
+                show: true,
+                ..WindowOptions::default()
+            },
+            |window, cx| {
+                let view = cx.new(|cx| Workspace::new(window, cx));
+                // This first level on the window, should be a Root.
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        )
+        .ok();
     });
 }
