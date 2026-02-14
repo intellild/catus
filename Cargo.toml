@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+alacritty_terminal = "0.25.1"
 anyhow = "1"
+async-trait = "0.1.89"
 dashmap = "6.1.0"
 dirs = "6"
 gpui = "0.2.2"
