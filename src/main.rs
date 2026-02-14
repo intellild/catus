@@ -24,6 +24,8 @@ fn main() {
             KeyBinding::new("ctrl-shift-tab", workspace::workspace::PrevTab, Some("Workspace")),
         ]);
 
+        cx.activate(true);
+
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
