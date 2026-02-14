@@ -4,7 +4,7 @@ use gpui::*;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, label::Label, v_flex};
 
 /// 终端视图 - 基于alacritty_terminal的本地终端实现
-/// 
+///
 /// 设计说明：
 /// 1. 当前版本为基础框架，预留alacritty_terminal集成接口
 /// 2. 渲染使用GPUI的Canvas进行自定义绘制
@@ -156,7 +156,7 @@ pub enum SshAuthMethod {
 }
 
 /// 远程终端视图（预留接口）
-/// 
+///
 /// 将来用于SSH远程终端
 pub struct RemoteTerminalView {
     pub config: SshConfig,

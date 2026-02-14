@@ -1,13 +1,18 @@
 use std::path::PathBuf;
 
-use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui::prelude::InteractiveElement;
-use gpui_component::Sizable;
+use gpui::*;
 use gpui_component::Selectable;
+use gpui_component::Sizable;
 use gpui_component::button::ButtonVariants;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, button::Button, h_flex, label::Label, v_flex, tab::{Tab, TabBar},
+    ActiveTheme, Icon, IconName,
+    button::Button,
+    h_flex,
+    label::Label,
+    tab::{Tab, TabBar},
+    v_flex,
 };
 
 use crate::explorer_view::ExplorerView;
@@ -51,7 +56,9 @@ impl Workspace {
 
     /// 创建新的Explorer Tab
     pub fn new_explorer_tab(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let id = self.tab_manager.add_tab(TabKind::Explorer { path: path.clone() });
+        let id = self
+            .tab_manager
+            .add_tab(TabKind::Explorer { path: path.clone() });
 
         let explorer = cx.new(|cx| ExplorerView::new_with_path(path, window, cx));
         self.active_views.insert(id, ActiveView::Explorer(explorer));
@@ -67,9 +74,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = self
-            .tab_manager
-            .add_tab(TabKind::Terminal { working_dir: working_dir.clone() });
+        let id = self.tab_manager.add_tab(TabKind::Terminal {
+            working_dir: working_dir.clone(),
+        });
 
         let terminal = cx.new(|cx| TerminalView::new(working_dir, window, cx));
         self.active_views.insert(id, ActiveView::Terminal(terminal));
@@ -120,9 +127,8 @@ impl Workspace {
         let view = cx.entity();
 
         // 找到当前激活的Tab索引
-        let selected_index = active_id.and_then(|active_id| {
-            tabs.iter().position(|t| t.id == active_id)
-        });
+        let selected_index =
+            active_id.and_then(|active_id| tabs.iter().position(|t| t.id == active_id));
 
         // 为on_click闭包克隆数据
         let tabs_for_click = tabs.clone();
@@ -138,23 +144,20 @@ impl Workspace {
                 });
             })
             .prefix(
-                h_flex()
-                    .h_full()
-                    .items_center()
-                    .px_1()
-                    .child(
-                        Button::new("new-tab")
-                            .icon(IconName::Plus)
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                let working_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                                this.new_terminal_tab(working_dir, _window, cx);
-                            })),
-                    )
+                h_flex().h_full().items_center().px_1().child(
+                    Button::new("new-tab")
+                        .icon(IconName::Plus)
+                        .xsmall()
+                        .ghost()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            let working_dir =
+                                dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                            this.new_terminal_tab(working_dir, _window, cx);
+                        })),
+                ),
             )
             .suffix(
-                div().w_2() // 右侧留白
+                div().w_2(), // 右侧留白
             )
             .children(tabs.into_iter().enumerate().map(move |(_index, tab)| {
                 let tab_id = tab.id;
@@ -182,7 +185,7 @@ impl Workspace {
                                 view_for_close.update(cx, |this, cx| {
                                     this.close_tab(tab_id, cx);
                                 });
-                            })
+                            }),
                     )
             }))
     }
@@ -225,14 +228,8 @@ impl Workspace {
                 h_flex()
                     .gap_3()
                     .text_color(cx.theme().muted_foreground)
-                    .child(
-                        Label::new("Ctrl+Tab: Next Tab")
-                            .text_xs()
-                    )
-                    .child(
-                        Label::new("Ctrl+W: Close Tab")
-                            .text_xs()
-                    )
+                    .child(Label::new("Ctrl+Tab: Next Tab").text_xs())
+                    .child(Label::new("Ctrl+W: Close Tab").text_xs()),
             )
     }
 
@@ -266,11 +263,8 @@ impl Workspace {
                                 v_flex()
                                     .gap_4()
                                     .items_center()
-                                    .child(
-                                        Icon::new(IconName::SquareTerminal)
-                                            .large()
-                                    )
-                                    .child(Label::new("Remote connection not yet implemented"))
+                                    .child(Icon::new(IconName::SquareTerminal).large())
+                                    .child(Label::new("Remote connection not yet implemented")),
                             )
                             .into_any_element();
                     }
@@ -317,19 +311,23 @@ impl Render for Workspace {
             .child(self.render_tab_bar(window, cx))
             .child(self.render_content(window, cx))
             .key_context("Workspace")
-            .on_action(cx.listener(|this, _: &workspace::NewFileExplorer, window, cx| {
-                let path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                this.new_explorer_tab(path, window, cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &workspace::NewFileExplorer, window, cx| {
+                    let path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                    this.new_explorer_tab(path, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &workspace::NewTerminal, window, cx| {
                 let working_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
                 this.new_terminal_tab(working_dir, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &workspace::CloseActiveTab, _window, cx| {
-                if let Some(id) = this.tab_manager.active_tab_id() {
-                    this.close_tab(id, cx);
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &workspace::CloseActiveTab, _window, cx| {
+                    if let Some(id) = this.tab_manager.active_tab_id() {
+                        this.close_tab(id, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &workspace::NextTab, _window, cx| {
                 this.next_tab(cx);
             }))
@@ -345,18 +343,20 @@ pub mod workspace {
 
     actions!(
         workspace,
-        [NewFileExplorer, NewTerminal, CloseActiveTab, NextTab, PrevTab]
+        [
+            NewFileExplorer,
+            NewTerminal,
+            CloseActiveTab,
+            NextTab,
+            PrevTab
+        ]
     );
 }
 
 /// 为ExplorerView添加辅助方法
 impl ExplorerView {
     /// 从指定路径创建ExplorerView
-    pub fn new_with_path(
-        root_path: PathBuf,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new_with_path(root_path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         use std::collections::HashMap;
 
         let mut view = Self {

@@ -17,11 +17,27 @@ fn main() {
 
         // 注册键盘快捷键
         cx.bind_keys([
-            KeyBinding::new("ctrl-t", workspace::workspace::NewTerminal, Some("Workspace")),
-            KeyBinding::new("ctrl-shift-e", workspace::workspace::NewFileExplorer, Some("Workspace")),
-            KeyBinding::new("ctrl-w", workspace::workspace::CloseActiveTab, Some("Workspace")),
+            KeyBinding::new(
+                "ctrl-t",
+                workspace::workspace::NewTerminal,
+                Some("Workspace"),
+            ),
+            KeyBinding::new(
+                "ctrl-shift-e",
+                workspace::workspace::NewFileExplorer,
+                Some("Workspace"),
+            ),
+            KeyBinding::new(
+                "ctrl-w",
+                workspace::workspace::CloseActiveTab,
+                Some("Workspace"),
+            ),
             KeyBinding::new("ctrl-tab", workspace::workspace::NextTab, Some("Workspace")),
-            KeyBinding::new("ctrl-shift-tab", workspace::workspace::PrevTab, Some("Workspace")),
+            KeyBinding::new(
+                "ctrl-shift-tab",
+                workspace::workspace::PrevTab,
+                Some("Workspace"),
+            ),
         ]);
 
         cx.activate(true);

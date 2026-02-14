@@ -12,13 +12,7 @@ pub struct ExplorerViewItem {
 }
 
 impl ExplorerViewItem {
-    pub fn new(
-        path: PathBuf,
-        name: String,
-        is_dir: bool,
-        depth: usize,
-        is_expanded: bool,
-    ) -> Self {
+    pub fn new(path: PathBuf, name: String, is_dir: bool, depth: usize, is_expanded: bool) -> Self {
         Self {
             path,
             name,
