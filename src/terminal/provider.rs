@@ -3,6 +3,7 @@ use alacritty_terminal::{
     term::{Config, RenderableContent, Term as AlacrittyTerm},
     vte::ansi::Processor,
 };
+use anyhow::{Context, Result};
 use dioxus::prelude::*;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::{io::Read, thread};
@@ -241,44 +242,44 @@ impl TerminalProvider {
     }
 
     /// 发送按键输入（异步）
-    pub async fn send_key(&self, key: &Key, modifiers: Modifiers) -> Result<(), String> {
+    pub async fn send_key(&self, key: &Key, modifiers: Modifiers) -> Result<()> {
         let data = encode_key(key, modifiers);
         self.command_tx
             .send(ProviderCommand::WriteData(data))
             .await
-            .map_err(|e| format!("Failed to send key: {}", e))
+            .context("Failed to send key")
     }
 
     /// 发送按键输入（同步，非阻塞）
-    pub fn try_send_key(&self, key: &Key, modifiers: Modifiers) -> Result<(), String> {
+    pub fn try_send_key(&self, key: &Key, modifiers: Modifiers) -> Result<()> {
         let data = encode_key(key, modifiers);
         self.command_tx
             .try_send(ProviderCommand::WriteData(data))
-            .map_err(|e| format!("Failed to send key: {}", e))
+            .context("Failed to send key")
     }
 
     /// 发送原始字节数据
-    pub async fn write_data(&self, data: Vec<u8>) -> Result<(), String> {
+    pub async fn write_data(&self, data: Vec<u8>) -> Result<()> {
         self.command_tx
             .send(ProviderCommand::WriteData(data))
             .await
-            .map_err(|e| format!("Failed to write data: {}", e))
+            .context("Failed to write data")
     }
 
     /// 调整终端尺寸
-    pub async fn resize(&self, rows: usize, cols: usize) -> Result<(), String> {
+    pub async fn resize(&self, rows: usize, cols: usize) -> Result<()> {
         self.command_tx
             .send(ProviderCommand::Resize { rows, cols })
             .await
-            .map_err(|e| format!("Failed to resize: {}", e))
+            .context("Failed to resize")
     }
 
     /// 关闭终端
-    pub async fn shutdown(&self) -> Result<(), String> {
+    pub async fn shutdown(&self) -> Result<()> {
         self.command_tx
             .send(ProviderCommand::Shutdown)
             .await
-            .map_err(|e| format!("Failed to shutdown: {}", e))
+            .context("Failed to shutdown")
     }
 
     /// 获取当前更新（非阻塞，直接获取最新值）
@@ -287,7 +288,7 @@ impl TerminalProvider {
     }
 
     /// 等待更新变化（异步）
-    pub async fn wait_for_update(&mut self) -> Result<TerminalUpdate, watch::error::RecvError> {
+    pub async fn wait_for_update(&mut self) -> Result<TerminalUpdate> {
         self.update_rx.changed().await?;
         Ok(self.update_rx.borrow().clone())
     }
@@ -298,9 +299,7 @@ impl TerminalProvider {
     }
 
     /// 等待事件变化（异步）
-    pub async fn wait_for_event(
-        &mut self,
-    ) -> Result<alacritty_terminal::event::Event, watch::error::RecvError> {
+    pub async fn wait_for_event(&mut self) -> Result<alacritty_terminal::event::Event> {
         self.event_rx.changed().await?;
         Ok(self.event_rx.borrow().clone())
     }

@@ -833,6 +833,7 @@ name = "catus"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "anyhow",
  "dioxus",
  "portable-pty",
  "serde",
