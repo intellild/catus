@@ -1,5 +1,8 @@
+mod terminal;
+
 use dioxus::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use terminal::TerminalView;
 
 // Tab 类型
 #[derive(Clone, PartialEq)]
@@ -9,6 +12,7 @@ enum TabKind {
 }
 
 impl TabKind {
+    #[allow(dead_code)]
     fn name(&self) -> &'static str {
         match self {
             TabKind::Shell => "Shell",
@@ -182,7 +186,7 @@ fn app() -> Element {
             // Tab 内容区域
             div {
                 class: "tab-content",
-                style: "flex: 1; background: #1e1e1e; overflow: auto;",
+                style: "flex: 1; background: #1e1e1e; overflow: hidden;",
 
                 {active_tab.map(|tab| {
                     rsx! {
@@ -200,24 +204,39 @@ fn app() -> Element {
 // Tab 内容组件
 #[component]
 fn TabContent(tab: Tab) -> Element {
+    match tab.kind {
+        TabKind::Shell => {
+            rsx! {
+                TerminalView {}
+            }
+        }
+        TabKind::Sftp => {
+            rsx! {
+                SftpPlaceholder { tab: tab }
+            }
+        }
+    }
+}
+
+// SFTP 占位组件
+#[component]
+fn SftpPlaceholder(tab: Tab) -> Element {
     rsx! {
         div {
-            class: "tab-panel",
+            class: "sftp-placeholder",
             style: "padding: 20px; height: 100%; box-sizing: border-box;",
 
-            // 占位内容
             div {
-                class: "placeholder",
                 style: "display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666;",
 
                 div {
                     style: "font-size: 64px; margin-bottom: 20px;",
-                    "{tab.kind.icon()}"
+                    "📁"
                 }
 
                 h2 {
                     style: "color: #ccc; margin: 0 0 10px 0; font-weight: normal;",
-                    "{tab.kind.name()}"
+                    "SFTP"
                 }
 
                 p {
@@ -230,7 +249,7 @@ fn TabContent(tab: Tab) -> Element {
 
                     p {
                         style: "color: #666; font-size: 14px; margin: 0;",
-                        "This is a placeholder for the {tab.kind.name()} content."
+                        "This is a placeholder for the SFTP content."
                     }
 
                     p {
