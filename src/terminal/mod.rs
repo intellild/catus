@@ -1,4 +1,6 @@
 pub mod state;
 pub mod view;
 
-pub use view::TerminalView;  // 只导出视图组件
+#[allow(unused_imports)]
+pub use state::{Modifiers, TerminalHandle, TerminalWriter, cell_to_ui_cell, run_terminal};
+pub use view::TerminalView;
