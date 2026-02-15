@@ -1,92 +1,103 @@
-use dioxus::prelude::UnboundedReceiver;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use super::state::{Modifiers, cell_to_ui_cell, run_terminal};
+use super::provider::{Modifiers, TerminalProvider, TerminalUpdate};
 
-/// 终端视图组件
+/// 终端视图组件 - 使用 TerminalProvider
 #[component]
 pub fn TerminalView() -> Element {
     // 默认终端尺寸
     let default_rows = 30;
     let default_cols = 100;
 
-    // 使用 RefCell 包装 TerminalHandle 以便在闭包中可变借用
-    let handle = use_hook(|| Rc::new(RefCell::new(run_terminal(default_rows, default_cols))));
+    // 使用 Rc<RefCell> 包装 TerminalProvider 以便在闭包中共享
+    let provider = use_hook(|| {
+        Rc::new(RefCell::new(TerminalProvider::new(
+            default_rows,
+            default_cols,
+        )))
+    });
 
-    // 触发重绘的信号
-    let mut refresh = use_signal(|| 0u64);
+    // 终端内容状态 - 使用 Signal 存储
+    let mut terminal_content = use_signal::<Option<TerminalUpdate>>(|| None);
 
     // 跟踪是否已聚焦
     let mut is_focused = use_signal(|| false);
 
-    // 后台任务：监听事件并触发重绘
-    let handle_for_coro = handle.clone();
+    // 后台任务：监听事件和内容更新
+    let provider_for_coro = provider.clone();
     use_coroutine(move |_rx: UnboundedReceiver<()>| {
-        let handle = handle_for_coro.clone();
+        let provider = provider_for_coro.clone();
         async move {
             loop {
-                // 短暂睡眠避免 CPU 占用过高
-                tokio::time::sleep(Duration::from_millis(16)).await;
+                {
+                    let p = provider.borrow();
 
-                // 检查是否有新事件
-                let has_event = {
-                    let mut h = handle.borrow_mut();
-                    h.try_recv_event().is_some()
-                };
+                    // 检查是否有事件（Wakeup 等）
+                    if let Some(event) = p.try_recv_event() {
+                        match event {
+                            alacritty_terminal::event::Event::Wakeup => {
+                                // 尝试获取最新内容
+                                while let Some(update) = p.try_recv_update() {
+                                    terminal_content.set(Some(update));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
 
-                if has_event {
-                    // 触发重绘
-                    refresh.with_mut(|v| *v = v.wrapping_add(1));
+                    // 检查是否有内容更新（直接发送的）
+                    while let Some(update) = p.try_recv_update() {
+                        terminal_content.set(Some(update));
+                    }
                 }
+
+                // 短暂睡眠避免 CPU 占用过高
+                tokio::time::sleep(Duration::from_millis(8)).await;
             }
         }
     });
 
-    // 读取当前 refresh 值来触发重新渲染
-    let _ = refresh();
+    // 获取当前内容
+    let content = terminal_content.read();
 
-    // 获取当前尺寸用于渲染
-    let (rows, cols) = {
-        let h = handle.borrow();
-        h.size()
-    };
+    // 提取渲染数据
+    let (_rows, _cols, grid_data, cursor_row, cursor_col) = content
+        .as_ref()
+        .map(|update| {
+            let rows = update.rows;
+            let cols = update.cols;
+            let cursor_row = update.content.cursor_row;
+            let cursor_col = update.content.cursor_col;
 
-    // 收集所有单元格数据用于渲染
-    let mut grid_data: Vec<Vec<(char, [u8; 3], [u8; 3], bool)>> = vec![vec![]; rows];
-    let mut cursor_pos = (0, 0);
-
-    {
-        let h = handle.borrow();
-        h.with_renderable_content(|content| {
-            // 获取光标位置
-            cursor_pos = (
-                content.cursor.point.line.0 as usize,
-                content.cursor.point.column.0 as usize,
-            );
-
-            // 初始化每行
-            for row in &mut grid_data {
+            // 构建网格数据
+            let mut grid: Vec<Vec<(char, [u8; 3], [u8; 3], bool)>> = vec![vec![]; rows];
+            for row in &mut grid {
                 row.resize(cols, (' ', [212, 212, 212], [30, 30, 30], false));
             }
 
-            // 遍历所有单元格
-            for indexed in content.display_iter {
-                let line = indexed.point.line.0 as usize;
-                let column = indexed.point.column.0 as usize;
-
-                if line < rows && column < cols {
-                    let (c, fg, bg, bold) = cell_to_ui_cell(indexed.cell);
-                    grid_data[line][column] = (c, fg, bg, bold);
+            // 填充单元格数据
+            for (row, col, c, fg, bg, bold) in &update.content.cells {
+                if *row < rows && *col < cols {
+                    grid[*row][*col] = (*c, *fg, *bg, *bold);
                 }
             }
+
+            (rows, cols, grid, cursor_row, cursor_col)
+        })
+        .unwrap_or_else(|| {
+            // 默认空内容
+            let rows = default_rows;
+            let cols = default_cols;
+            let grid: Vec<Vec<(char, [u8; 3], [u8; 3], bool)>> =
+                vec![vec![(' ', [212, 212, 212], [30, 30, 30], false); cols]; rows];
+            (rows, cols, grid, 0, 0)
         });
-    }
 
     // 键盘事件处理器
-    let handle_for_key = handle.clone();
+    let provider_for_key = provider.clone();
     let onkeydown = move |event: Event<KeyboardData>| {
         let key = event.key();
         let modifiers = Modifiers {
@@ -96,10 +107,7 @@ pub fn TerminalView() -> Element {
             meta: event.modifiers().meta(),
         };
 
-        let mut h = handle_for_key.borrow_mut();
-        let key_str = format!("{:?}", key);
-
-        // 转换 key 为字符串进行处理
+        // 转换 key 为字符串
         let key_name = match key {
             Key::Character(c) => c.to_string(),
             Key::Enter => "Enter".to_string(),
@@ -128,14 +136,24 @@ pub fn TerminalView() -> Element {
             Key::F10 => "F10".to_string(),
             Key::F11 => "F11".to_string(),
             Key::F12 => "F12".to_string(),
-            _ if key_str == "Space" || key_str == " " => " ".to_string(),
-            _ => key_str,
+            _ => {
+                let key_str = format!("{:?}", key);
+                if key_str == "Space" || key_str == " " {
+                    " ".to_string()
+                } else {
+                    key_str
+                }
+            }
         };
 
-        // 发送按键到终端
-        if let Err(e) = h.writer.send_key(&key_name, modifiers) {
-            eprintln!("Failed to send key: {}", e);
-        }
+        // 异步发送按键
+        let provider = provider_for_key.clone();
+        spawn(async move {
+            let p = provider.borrow();
+            if let Err(e) = p.send_key(&key_name, modifiers).await {
+                eprintln!("Failed to send key: {}", e);
+            }
+        });
     };
 
     // 聚焦处理器
@@ -174,7 +192,7 @@ pub fn TerminalView() -> Element {
                         style: "display: flex; height: 20px;",
 
                         {row.iter().enumerate().map(|(col_idx, (c, fg, bg, bold))| {
-                            let is_cursor = row_idx == cursor_pos.0 && col_idx == cursor_pos.1;
+                            let is_cursor = row_idx == cursor_row && col_idx == cursor_col;
                             let bg_str = if is_cursor {
                                 "#007acc".to_string()
                             } else {
