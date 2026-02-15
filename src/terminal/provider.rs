@@ -4,12 +4,9 @@ use alacritty_terminal::{
     vte::ansi::Processor,
 };
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use std::{
-    io::Read,
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::{io::Read, thread};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::watch;
 
 /// 发送给 TerminalProvider 的命令
 pub enum ProviderCommand {
@@ -22,6 +19,7 @@ pub enum ProviderCommand {
 }
 
 /// TerminalProvider 发送给 UI 的更新
+#[derive(Clone)]
 pub struct TerminalUpdate {
     /// 可渲染的终端内容
     pub content: RenderableContentStatic,
@@ -32,6 +30,7 @@ pub struct TerminalUpdate {
 }
 
 /// 静态化的 RenderableContent 数据，可以跨线程发送
+#[derive(Clone)]
 pub struct RenderableContentStatic {
     /// 单元格数据: (行, 列, 字符, 前景色RGB, 背景色RGB, 是否粗体)
     pub cells: Vec<(usize, usize, char, [u8; 3], [u8; 3], bool)>,
@@ -143,21 +142,21 @@ fn convert_content_to_static(
     }
 }
 
-/// Channel 事件监听器 - 将 alacritty 事件转发到 channel
+/// Channel 事件监听器 - 将 alacritty 事件转发到 watch channel
 pub struct ChannelEventListener {
-    tx: Sender<alacritty_terminal::event::Event>,
+    tx: watch::Sender<alacritty_terminal::event::Event>,
 }
 
 impl ChannelEventListener {
-    pub fn new(tx: Sender<alacritty_terminal::event::Event>) -> Self {
+    pub fn new(tx: watch::Sender<alacritty_terminal::event::Event>) -> Self {
         Self { tx }
     }
 }
 
 impl alacritty_terminal::event::EventListener for ChannelEventListener {
     fn send_event(&self, event: alacritty_terminal::event::Event) {
-        // 通知有事件发生，UI 需要刷新
-        let _ = self.tx.try_send(event);
+        // 通知有事件发生，UI 需要刷新（watch channel 只保留最新事件）
+        let _ = self.tx.send(event);
     }
 }
 
@@ -188,14 +187,16 @@ impl Dimensions for TermDimensions {
 /// 2. 持续读取 PTY 输出，写入 Terminal，然后将 renderable_content 通过 channel 发送给 UI
 /// 3. UI 通过 command channel 发送输入和命令
 /// 4. 通过 event_rx 接收 alacritty 事件（如 Wakeup、Bell 等）
+///
+/// 使用 watch channel 传递更新和事件，只保留最新状态
 #[derive(Clone)]
 pub struct TerminalProvider {
-    /// 向 Provider 发送命令的通道
+    /// 向 Provider 发送命令的通道（mpsc - 命令需要逐个处理）
     pub command_tx: Sender<ProviderCommand>,
-    /// 从 Provider 接收更新内容的通道（使用 Arc<Mutex> 支持 Clone）
-    pub update_rx: Arc<Mutex<Receiver<TerminalUpdate>>>,
-    /// 从 Provider 接收 alacritty 事件的通道（使用 Arc<Mutex> 支持 Clone）
-    pub event_rx: Arc<Mutex<Receiver<alacritty_terminal::event::Event>>>,
+    /// 从 Provider 接收更新内容的 watch channel（只保留最新内容）
+    pub update_rx: watch::Receiver<TerminalUpdate>,
+    /// 从 Provider 接收 alacritty 事件的 watch channel（只保留最新事件）
+    pub event_rx: watch::Receiver<alacritty_terminal::event::Event>,
 }
 
 impl TerminalProvider {
@@ -206,8 +207,23 @@ impl TerminalProvider {
     /// * `cols` - 终端列数
     pub fn new(rows: usize, cols: usize) -> Self {
         let (command_tx, command_rx) = mpsc::channel::<ProviderCommand>(100);
-        let (update_tx, update_rx) = mpsc::channel::<TerminalUpdate>(10);
-        let (event_tx, event_rx) = mpsc::channel::<alacritty_terminal::event::Event>(100);
+
+        // 创建默认的初始值
+        let initial_update = TerminalUpdate {
+            content: RenderableContentStatic {
+                cells: Vec::new(),
+                cursor_row: 0,
+                cursor_col: 0,
+                cursor_visible: false,
+                display_lines: rows,
+                display_cols: cols,
+            },
+            rows,
+            cols,
+        };
+        let (update_tx, update_rx) = watch::channel(initial_update);
+
+        let (event_tx, event_rx) = watch::channel(alacritty_terminal::event::Event::Wakeup);
 
         let worker_handle = thread::spawn(move || {
             run_terminal_worker(rows, cols, command_rx, update_tx, event_tx);
@@ -218,17 +234,25 @@ impl TerminalProvider {
 
         Self {
             command_tx,
-            update_rx: Arc::new(Mutex::new(update_rx)),
-            event_rx: Arc::new(Mutex::new(event_rx)),
+            update_rx,
+            event_rx,
         }
     }
 
-    /// 发送按键输入
+    /// 发送按键输入（异步）
     pub async fn send_key(&self, key: &str, modifiers: Modifiers) -> Result<(), String> {
         let data = encode_key(key, modifiers);
         self.command_tx
             .send(ProviderCommand::WriteData(data))
             .await
+            .map_err(|e| format!("Failed to send key: {}", e))
+    }
+
+    /// 发送按键输入（同步，非阻塞）
+    pub fn try_send_key(&self, key: &str, modifiers: Modifiers) -> Result<(), String> {
+        let data = encode_key(key, modifiers);
+        self.command_tx
+            .try_send(ProviderCommand::WriteData(data))
             .map_err(|e| format!("Failed to send key: {}", e))
     }
 
@@ -256,26 +280,28 @@ impl TerminalProvider {
             .map_err(|e| format!("Failed to shutdown: {}", e))
     }
 
-    /// 尝试接收更新（非阻塞）
-    pub fn try_recv_update(&self) -> Option<TerminalUpdate> {
-        self.update_rx.lock().ok()?.try_recv().ok()
+    /// 获取当前更新（非阻塞，直接获取最新值）
+    pub fn get_update(&self) -> TerminalUpdate {
+        self.update_rx.borrow().clone()
     }
 
-    /// 异步接收更新
-    pub async fn recv_update(&self) -> Option<TerminalUpdate> {
-        // 由于 MutexGuard 不能跨 await，需要特殊处理
-        // 这里简化处理，使用阻塞接收
-        tokio::task::block_in_place(|| self.update_rx.lock().ok()?.blocking_recv())
+    /// 等待更新变化（异步）
+    pub async fn wait_for_update(&mut self) -> Result<TerminalUpdate, watch::error::RecvError> {
+        self.update_rx.changed().await?;
+        Ok(self.update_rx.borrow().clone())
     }
 
-    /// 尝试接收事件（非阻塞）
-    pub fn try_recv_event(&self) -> Option<alacritty_terminal::event::Event> {
-        self.event_rx.lock().ok()?.try_recv().ok()
+    /// 获取当前事件（非阻塞，直接获取最新值）
+    pub fn get_event(&self) -> alacritty_terminal::event::Event {
+        self.event_rx.borrow().clone()
     }
 
-    /// 异步接收事件
-    pub async fn recv_event(&self) -> Option<alacritty_terminal::event::Event> {
-        tokio::task::block_in_place(|| self.event_rx.lock().ok()?.blocking_recv())
+    /// 等待事件变化（异步）
+    pub async fn wait_for_event(
+        &mut self,
+    ) -> Result<alacritty_terminal::event::Event, watch::error::RecvError> {
+        self.event_rx.changed().await?;
+        Ok(self.event_rx.borrow().clone())
     }
 }
 
@@ -284,8 +310,8 @@ fn run_terminal_worker(
     rows: usize,
     cols: usize,
     mut command_rx: Receiver<ProviderCommand>,
-    update_tx: Sender<TerminalUpdate>,
-    event_tx: Sender<alacritty_terminal::event::Event>,
+    update_tx: watch::Sender<TerminalUpdate>,
+    event_tx: watch::Sender<alacritty_terminal::event::Event>,
 ) {
     // 创建 PTY
     let pty_system = NativePtySystem::default();
@@ -370,9 +396,8 @@ fn run_terminal_worker(
                     cols,
                 };
 
-                if update_tx.try_send(update).is_err() {
-                    // 如果发送失败（channel 满或关闭），继续运行
-                }
+                // 发送更新（watch channel 只保留最新值）
+                let _ = update_tx.send(update);
             }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::WouldBlock {
@@ -417,7 +442,7 @@ fn run_terminal_worker(
     let cols = term.columns();
     let content = term.renderable_content();
     let static_content = convert_content_to_static(content, rows, cols);
-    let _ = update_tx.try_send(TerminalUpdate {
+    let _ = update_tx.send(TerminalUpdate {
         content: static_content,
         rows,
         cols,

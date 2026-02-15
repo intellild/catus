@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::provider::{Modifiers, TerminalProvider, TerminalUpdate};
 
-/// 终端视图组件 - 使用 TerminalProvider
+/// 终端视图组件 - 使用 TerminalProvider (watch channel 版本)
 #[component]
 pub fn TerminalView() -> Element {
     // 默认终端尺寸
@@ -26,36 +26,40 @@ pub fn TerminalView() -> Element {
     // 跟踪是否已聚焦
     let mut is_focused = use_signal(|| false);
 
-    // 后台任务：监听事件和内容更新
+    // 后台任务：监听事件和内容更新 (watch channel 版本)
     let provider_for_coro = provider.clone();
     use_coroutine(move |_rx: UnboundedReceiver<()>| {
         let provider = provider_for_coro.clone();
         async move {
             loop {
                 {
-                    let p = provider.borrow();
+                    let mut p = provider.borrow_mut();
 
-                    // 检查是否有事件（Wakeup 等）
-                    if let Some(event) = p.try_recv_event() {
-                        match event {
-                            alacritty_terminal::event::Event::Wakeup => {
-                                // 尝试获取最新内容
-                                while let Some(update) = p.try_recv_update() {
+                    // 等待事件变化
+                    match p.wait_for_event().await {
+                        Ok(event) => {
+                            match event {
+                                alacritty_terminal::event::Event::Wakeup => {
+                                    // 获取最新内容
+                                    let update = p.get_update();
+                                    terminal_content.set(Some(update));
+                                }
+                                _ => {
+                                    // 其他事件也触发内容刷新
+                                    let update = p.get_update();
                                     terminal_content.set(Some(update));
                                 }
                             }
-                            _ => {}
                         }
-                    }
-
-                    // 检查是否有内容更新（直接发送的）
-                    while let Some(update) = p.try_recv_update() {
-                        terminal_content.set(Some(update));
+                        Err(_) => {
+                            // channel 关闭，退出循环
+                            break;
+                        }
                     }
                 }
 
-                // 短暂睡眠避免 CPU 占用过高
-                tokio::time::sleep(Duration::from_millis(8)).await;
+                // 短暂休眠避免 CPU 占用过高
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }
     });
@@ -146,14 +150,11 @@ pub fn TerminalView() -> Element {
             }
         };
 
-        // 异步发送按键
-        let provider = provider_for_key.clone();
-        spawn(async move {
-            let p = provider.borrow();
-            if let Err(e) = p.send_key(&key_name, modifiers).await {
-                eprintln!("Failed to send key: {}", e);
-            }
-        });
+        // 同步发送按键
+        let p = provider_for_key.borrow();
+        if let Err(e) = p.try_send_key(&key_name, modifiers) {
+            eprintln!("Failed to send key: {}", e);
+        }
     };
 
     // 聚焦处理器
