@@ -3,6 +3,7 @@ use alacritty_terminal::{
     term::{Config, RenderableContent, Term as AlacrittyTerm},
     vte::ansi::Processor,
 };
+use dioxus::prelude::*;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::{io::Read, thread};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -240,7 +241,7 @@ impl TerminalProvider {
     }
 
     /// 发送按键输入（异步）
-    pub async fn send_key(&self, key: &str, modifiers: Modifiers) -> Result<(), String> {
+    pub async fn send_key(&self, key: &Key, modifiers: Modifiers) -> Result<(), String> {
         let data = encode_key(key, modifiers);
         self.command_tx
             .send(ProviderCommand::WriteData(data))
@@ -249,7 +250,7 @@ impl TerminalProvider {
     }
 
     /// 发送按键输入（同步，非阻塞）
-    pub fn try_send_key(&self, key: &str, modifiers: Modifiers) -> Result<(), String> {
+    pub fn try_send_key(&self, key: &Key, modifiers: Modifiers) -> Result<(), String> {
         let data = encode_key(key, modifiers);
         self.command_tx
             .try_send(ProviderCommand::WriteData(data))
@@ -458,12 +459,12 @@ pub struct Modifiers {
     pub meta: bool,
 }
 
-/// 编码按键为字节序列
-fn encode_key(key: &str, modifiers: Modifiers) -> Vec<u8> {
+/// 编码 Dioxus Key 为字节序列（公共函数，供外部直接使用）
+pub fn encode_key(key: &Key, modifiers: Modifiers) -> Vec<u8> {
     match key {
         // 单字符输入（字母、数字、符号）
-        c if c.len() == 1 => {
-            let ch = c.chars().next().unwrap();
+        Key::Character(c) => {
+            let ch = c.chars().next().unwrap_or('\0');
 
             // 处理 Ctrl 修饰符
             if modifiers.ctrl && ch.is_ascii_alphabetic() {
@@ -475,45 +476,44 @@ fn encode_key(key: &str, modifiers: Modifiers) -> Vec<u8> {
         }
 
         // 功能键
-        "Enter" => vec![b'\r'],
-        "Escape" => vec![0x1b],
-        "Tab" => vec![b'\t'],
-        "Backspace" => vec![0x08],
-        "Delete" => vec![0x1b, b'[', b'3', b'~'],
-        "Insert" => vec![0x1b, b'[', b'2', b'~'],
+        Key::Enter => vec![b'\r'],
+        Key::Escape => vec![0x1b],
+        Key::Tab => vec![b'\t'],
+        Key::Backspace => vec![0x08],
+        Key::Delete => vec![0x1b, b'[', b'3', b'~'],
+        Key::Insert => vec![0x1b, b'[', b'2', b'~'],
 
         // 方向键
-        "ArrowUp" => vec![0x1b, b'[', b'A'],
-        "ArrowDown" => vec![0x1b, b'[', b'B'],
-        "ArrowRight" => vec![0x1b, b'[', b'C'],
-        "ArrowLeft" => vec![0x1b, b'[', b'D'],
+        Key::ArrowUp => vec![0x1b, b'[', b'A'],
+        Key::ArrowDown => vec![0x1b, b'[', b'B'],
+        Key::ArrowRight => vec![0x1b, b'[', b'C'],
+        Key::ArrowLeft => vec![0x1b, b'[', b'D'],
 
         // Home/End
-        "Home" => vec![0x1b, b'[', b'H'],
-        "End" => vec![0x1b, b'[', b'F'],
+        Key::Home => vec![0x1b, b'[', b'H'],
+        Key::End => vec![0x1b, b'[', b'F'],
 
         // Page Up/Down
-        "PageUp" => vec![0x1b, b'[', b'5', b'~'],
-        "PageDown" => vec![0x1b, b'[', b'6', b'~'],
+        Key::PageUp => vec![0x1b, b'[', b'5', b'~'],
+        Key::PageDown => vec![0x1b, b'[', b'6', b'~'],
 
         // 功能键 F1-F12
-        "F1" => vec![0x1b, b'[', b'1', b'1', b'~'],
-        "F2" => vec![0x1b, b'[', b'1', b'2', b'~'],
-        "F3" => vec![0x1b, b'[', b'1', b'3', b'~'],
-        "F4" => vec![0x1b, b'[', b'1', b'4', b'~'],
-        "F5" => vec![0x1b, b'[', b'1', b'5', b'~'],
-        "F6" => vec![0x1b, b'[', b'1', b'7', b'~'],
-        "F7" => vec![0x1b, b'[', b'1', b'8', b'~'],
-        "F8" => vec![0x1b, b'[', b'1', b'9', b'~'],
-        "F9" => vec![0x1b, b'[', b'2', b'0', b'~'],
-        "F10" => vec![0x1b, b'[', b'2', b'1', b'~'],
-        "F11" => vec![0x1b, b'[', b'2', b'3', b'~'],
-        "F12" => vec![0x1b, b'[', b'2', b'4', b'~'],
+        Key::F1 => vec![0x1b, b'[', b'1', b'1', b'~'],
+        Key::F2 => vec![0x1b, b'[', b'1', b'2', b'~'],
+        Key::F3 => vec![0x1b, b'[', b'1', b'3', b'~'],
+        Key::F4 => vec![0x1b, b'[', b'1', b'4', b'~'],
+        Key::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
+        Key::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
+        Key::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
+        Key::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
+        Key::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
+        Key::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
+        Key::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
+        Key::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
 
-        // 空格
-        " " => vec![b' '],
-
-        _ => key.as_bytes().to_vec(),
+        // 空格（通过 Character 处理）
+        // 其他未处理的键
+        _ => vec![],
     }
 }
 
@@ -523,27 +523,36 @@ mod tests {
 
     #[test]
     fn test_encode_key_basic() {
-        assert_eq!(encode_key("a", Modifiers::default()), vec![b'a']);
-        assert_eq!(encode_key("Enter", Modifiers::default()), vec![b'\r']);
-        assert_eq!(encode_key("Tab", Modifiers::default()), vec![b'\t']);
+        assert_eq!(
+            encode_key(&Key::Character("a".to_string()), Modifiers::default()),
+            vec![b'a']
+        );
+        assert_eq!(encode_key(&Key::Enter, Modifiers::default()), vec![b'\r']);
+        assert_eq!(encode_key(&Key::Tab, Modifiers::default()), vec![b'\t']);
     }
 
     #[test]
     fn test_encode_key_ctrl() {
         let mut mods = Modifiers::default();
         mods.ctrl = true;
-        assert_eq!(encode_key("a", mods), vec![0x01]); // Ctrl+A
-        assert_eq!(encode_key("c", mods), vec![0x03]); // Ctrl+C
+        assert_eq!(
+            encode_key(&Key::Character("a".to_string()), mods),
+            vec![0x01]
+        ); // Ctrl+A
+        assert_eq!(
+            encode_key(&Key::Character("c".to_string()), mods),
+            vec![0x03]
+        ); // Ctrl+C
     }
 
     #[test]
     fn test_encode_key_arrows() {
         assert_eq!(
-            encode_key("ArrowUp", Modifiers::default()),
+            encode_key(&Key::ArrowUp, Modifiers::default()),
             vec![0x1b, b'[', b'A']
         );
         assert_eq!(
-            encode_key("ArrowDown", Modifiers::default()),
+            encode_key(&Key::ArrowDown, Modifiers::default()),
             vec![0x1b, b'[', b'B']
         );
     }

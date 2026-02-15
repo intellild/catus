@@ -1,9 +1,7 @@
 use dioxus::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
-use super::provider::{Modifiers, TerminalProvider, TerminalUpdate};
+use super::provider::{Modifiers, ProviderCommand, TerminalProvider, TerminalUpdate, encode_key};
 
 /// 终端视图组件 - 使用 TerminalProvider (watch channel 版本)
 #[component]
@@ -12,13 +10,16 @@ pub fn TerminalView() -> Element {
     let default_rows = 30;
     let default_cols = 100;
 
-    // 使用 Rc<RefCell> 包装 TerminalProvider 以便在闭包中共享
-    let provider = use_hook(|| {
-        Rc::new(RefCell::new(TerminalProvider::new(
-            default_rows,
-            default_cols,
-        )))
-    });
+    // 创建 TerminalProvider，然后解构出各个 channel
+    let provider = use_hook(|| TerminalProvider::new(default_rows, default_cols));
+
+    // 分别 clone 需要的部分给不同用途
+    // 后台任务需要 event_rx 和 update_rx
+    let event_rx = provider.event_rx.clone();
+    let update_rx = provider.update_rx.clone();
+
+    // 键盘处理器需要 command_tx
+    let command_tx = provider.command_tx.clone();
 
     // 终端内容状态 - 使用 Signal 存储
     let mut terminal_content = use_signal::<Option<TerminalUpdate>>(|| None);
@@ -26,35 +27,32 @@ pub fn TerminalView() -> Element {
     // 跟踪是否已聚焦
     let mut is_focused = use_signal(|| false);
 
-    // 后台任务：监听事件和内容更新 (watch channel 版本)
-    let provider_for_coro = provider.clone();
+    // 后台任务：监听事件和内容更新 (只 clone receiver，不 clone 整个 provider)
     use_coroutine(move |_rx: UnboundedReceiver<()>| {
-        let provider = provider_for_coro.clone();
+        let mut event_rx = event_rx.clone();
+        let update_rx = update_rx.clone();
         async move {
             loop {
-                {
-                    let mut p = provider.borrow_mut();
-
-                    // 等待事件变化
-                    match p.wait_for_event().await {
-                        Ok(event) => {
-                            match event {
-                                alacritty_terminal::event::Event::Wakeup => {
-                                    // 获取最新内容
-                                    let update = p.get_update();
-                                    terminal_content.set(Some(update));
-                                }
-                                _ => {
-                                    // 其他事件也触发内容刷新
-                                    let update = p.get_update();
-                                    terminal_content.set(Some(update));
-                                }
+                // 等待事件变化
+                match event_rx.changed().await {
+                    Ok(_) => {
+                        let event = event_rx.borrow().clone();
+                        match event {
+                            alacritty_terminal::event::Event::Wakeup => {
+                                // 获取最新内容
+                                let update = update_rx.borrow().clone();
+                                terminal_content.set(Some(update));
+                            }
+                            _ => {
+                                // 其他事件也触发内容刷新
+                                let update = update_rx.borrow().clone();
+                                terminal_content.set(Some(update));
                             }
                         }
-                        Err(_) => {
-                            // channel 关闭，退出循环
-                            break;
-                        }
+                    }
+                    Err(_) => {
+                        // channel 关闭，退出循环
+                        break;
                     }
                 }
 
@@ -100,8 +98,7 @@ pub fn TerminalView() -> Element {
             (rows, cols, grid, 0, 0)
         });
 
-    // 键盘事件处理器
-    let provider_for_key = provider.clone();
+    // 键盘事件处理器 - 直接使用 Key enum
     let onkeydown = move |event: Event<KeyboardData>| {
         let key = event.key();
         let modifiers = Modifiers {
@@ -111,49 +108,12 @@ pub fn TerminalView() -> Element {
             meta: event.modifiers().meta(),
         };
 
-        // 转换 key 为字符串
-        let key_name = match key {
-            Key::Character(c) => c.to_string(),
-            Key::Enter => "Enter".to_string(),
-            Key::Escape => "Escape".to_string(),
-            Key::Tab => "Tab".to_string(),
-            Key::Backspace => "Backspace".to_string(),
-            Key::Delete => "Delete".to_string(),
-            Key::Insert => "Insert".to_string(),
-            Key::Home => "Home".to_string(),
-            Key::End => "End".to_string(),
-            Key::PageUp => "PageUp".to_string(),
-            Key::PageDown => "PageDown".to_string(),
-            Key::ArrowUp => "ArrowUp".to_string(),
-            Key::ArrowDown => "ArrowDown".to_string(),
-            Key::ArrowLeft => "ArrowLeft".to_string(),
-            Key::ArrowRight => "ArrowRight".to_string(),
-            Key::F1 => "F1".to_string(),
-            Key::F2 => "F2".to_string(),
-            Key::F3 => "F3".to_string(),
-            Key::F4 => "F4".to_string(),
-            Key::F5 => "F5".to_string(),
-            Key::F6 => "F6".to_string(),
-            Key::F7 => "F7".to_string(),
-            Key::F8 => "F8".to_string(),
-            Key::F9 => "F9".to_string(),
-            Key::F10 => "F10".to_string(),
-            Key::F11 => "F11".to_string(),
-            Key::F12 => "F12".to_string(),
-            _ => {
-                let key_str = format!("{:?}", key);
-                if key_str == "Space" || key_str == " " {
-                    " ".to_string()
-                } else {
-                    key_str
-                }
+        // 直接编码 Key enum 并发送
+        let data = encode_key(&key, modifiers);
+        if !data.is_empty() {
+            if let Err(e) = command_tx.try_send(ProviderCommand::WriteData(data)) {
+                eprintln!("Failed to send key: {}", e);
             }
-        };
-
-        // 同步发送按键
-        let p = provider_for_key.borrow();
-        if let Err(e) = p.try_send_key(&key_name, modifiers) {
-            eprintln!("Failed to send key: {}", e);
         }
     };
 
