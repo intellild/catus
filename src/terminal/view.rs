@@ -1,4 +1,5 @@
-use crate::terminal::provider::{Modifiers, RenderableContentStatic, TerminalProvider};
+use crate::terminal::provider::RenderableContentStatic;
+use crate::terminal::provider::TerminalProvider;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -60,19 +61,20 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let _modifiers = Modifiers {
-      ctrl: event.keystroke.modifiers.control,
-      alt: event.keystroke.modifiers.alt,
-      shift: event.keystroke.modifiers.shift,
-      meta: event.keystroke.modifiers.platform,
-    };
+    let keystroke = event.keystroke.clone();
+    let command_tx = self.provider.read(cx).command_tx.clone();
 
-    let _key = gpui_key_to_provider_key(&event.keystroke.key);
+    cx.spawn(async move |this, cx| {
+      // 直接通过 command_tx 发送按键
+      let cmd = crate::terminal::provider::ProviderCommand::SendKey(keystroke);
+      let _ = command_tx.send(cmd).await;
 
-    // TODO: 实现按键发送
-    // 由于 send_key 是异步的，我们需要使用 cx.spawn
-
-    cx.notify();
+      // 通知刷新
+      let _ = this.update(cx, |_, cx| {
+        cx.notify();
+      });
+    })
+    .detach();
   }
 
   /// 渲染终端内容
@@ -168,41 +170,5 @@ impl Render for TerminalView {
 impl Focusable for TerminalView {
   fn focus_handle(&self, _cx: &App) -> FocusHandle {
     _cx.focus_handle()
-  }
-}
-
-/// 将 GPUI 的 Keystroke key 转换为 provider 的 Key
-fn gpui_key_to_provider_key(key: &str) -> crate::terminal::provider::Key {
-  use crate::terminal::provider::Key;
-
-  match key {
-    "enter" => Key::Enter,
-    "escape" | "esc" => Key::Escape,
-    "tab" => Key::Tab,
-    "backspace" => Key::Backspace,
-    "delete" | "del" => Key::Delete,
-    "insert" | "ins" => Key::Insert,
-    "up" => Key::ArrowUp,
-    "down" => Key::ArrowDown,
-    "left" => Key::ArrowLeft,
-    "right" => Key::ArrowRight,
-    "home" => Key::Home,
-    "end" => Key::End,
-    "pageup" | "page up" => Key::PageUp,
-    "pagedown" | "page down" => Key::PageDown,
-    "f1" => Key::F1,
-    "f2" => Key::F2,
-    "f3" => Key::F3,
-    "f4" => Key::F4,
-    "f5" => Key::F5,
-    "f6" => Key::F6,
-    "f7" => Key::F7,
-    "f8" => Key::F8,
-    "f9" => Key::F9,
-    "f10" => Key::F10,
-    "f11" => Key::F11,
-    "f12" => Key::F12,
-    k if k.len() == 1 => Key::Character(k.to_string()),
-    _ => Key::Unidentified,
   }
 }

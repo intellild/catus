@@ -5,7 +5,7 @@ use alacritty_terminal::{
   vte::ansi::Processor,
 };
 use anyhow::{Context as AnyhowContext, Result};
-use gpui::BackgroundExecutor;
+use gpui::{BackgroundExecutor, Keystroke};
 use portable_pty::{CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
 use std::time::{Duration, Instant};
 use std::{io::Read, thread};
@@ -16,7 +16,7 @@ pub enum ProviderCommand {
   /// 向 PTY 写入原始数据
   WriteData(Vec<u8>),
   /// 发送按键（会在 worker 线程中 encode 后写入 PTY）
-  SendKey(Key, Modifiers),
+  SendKey(Keystroke),
   /// 调整终端尺寸
   Resize {
     rows: usize,
@@ -254,10 +254,10 @@ impl TerminalProvider {
   }
 
   /// 发送按键输入（异步）
-  pub async fn send_key(&self, key: Key, modifiers: Modifiers) -> Result<()> {
+  pub async fn send_key(&self, keystroke: Keystroke) -> Result<()> {
     self
       .command_tx
-      .send(ProviderCommand::SendKey(key, modifiers))
+      .send(ProviderCommand::SendKey(keystroke))
       .await
       .context("Failed to send key")
   }
@@ -413,8 +413,8 @@ async fn run_terminal_worker(
           break 'running;
         }
       }
-      ProviderCommand::SendKey(key, modifiers) => {
-        let data = encode_key(key, modifiers);
+      ProviderCommand::SendKey(keystroke) => {
+        let data = encode_keystroke(&keystroke);
         if writer.write_all(&data).is_err() || writer.flush().is_err() {
           break 'running;
         }
@@ -453,118 +453,62 @@ async fn run_terminal_worker(
   Ok(status)
 }
 
-/// 按键枚举
-#[derive(Debug, Clone)]
-pub enum Key {
-  /// 单字符（字母、数字、符号）
-  Character(String),
-  /// Enter 键
-  Enter,
-  /// Escape 键
-  Escape,
-  /// Tab 键
-  Tab,
-  /// Backspace 键
-  Backspace,
-  /// Delete 键
-  Delete,
-  /// Insert 键
-  Insert,
-  /// 上箭头
-  ArrowUp,
-  /// 下箭头
-  ArrowDown,
-  /// 左箭头
-  ArrowLeft,
-  /// 右箭头
-  ArrowRight,
-  /// Home 键
-  Home,
-  /// End 键
-  End,
-  /// Page Up
-  PageUp,
-  /// Page Down
-  PageDown,
-  /// F1-F12
-  F1,
-  F2,
-  F3,
-  F4,
-  F5,
-  F6,
-  F7,
-  F8,
-  F9,
-  F10,
-  F11,
-  F12,
-  /// 未识别的键
-  Unidentified,
-}
+/// 将 GPUI Keystroke 编码为字节序列
+fn encode_keystroke(keystroke: &Keystroke) -> Vec<u8> {
+  let key = keystroke.key.as_str();
+  let modifiers = &keystroke.modifiers;
 
-/// 修饰键状态
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Modifiers {
-  pub ctrl: bool,
-  pub alt: bool,
-  pub shift: bool,
-  pub meta: bool,
-}
-
-/// 编码 Key 为字节序列（公共函数，供外部直接使用）
-pub fn encode_key(key: Key, modifiers: Modifiers) -> Vec<u8> {
   match key {
     // 单字符输入（字母、数字、符号）
-    Key::Character(c) => {
-      let ch = c.chars().next().unwrap_or('\0');
+    k if k.len() == 1 => {
+      let ch = k.chars().next().unwrap_or('\0');
 
       // 处理 Ctrl 修饰符
-      if modifiers.ctrl && ch.is_ascii_alphabetic() {
+      if modifiers.control && ch.is_ascii_alphabetic() {
         let byte = ch.to_ascii_lowercase() as u8;
         vec![byte - b'a' + 1] // Ctrl+A = 0x01
       } else {
-        c.into_bytes()
+        k.as_bytes().to_vec()
       }
     }
 
     // 功能键
-    Key::Enter => vec![b'\r'],
-    Key::Escape => vec![0x1b],
-    Key::Tab => vec![b'\t'],
-    Key::Backspace => vec![0x08],
-    Key::Delete => vec![0x1b, b'[', b'3', b'~'],
-    Key::Insert => vec![0x1b, b'[', b'2', b'~'],
+    "enter" | "return" => vec![b'\r'],
+    "escape" | "esc" => vec![0x1b],
+    "tab" => vec![b'\t'],
+    "backspace" => vec![0x08],
+    "delete" | "del" => vec![0x1b, b'[', b'3', b'~'],
+    "insert" | "ins" => vec![0x1b, b'[', b'2', b'~'],
 
     // 方向键
-    Key::ArrowUp => vec![0x1b, b'[', b'A'],
-    Key::ArrowDown => vec![0x1b, b'[', b'B'],
-    Key::ArrowRight => vec![0x1b, b'[', b'C'],
-    Key::ArrowLeft => vec![0x1b, b'[', b'D'],
+    "up" => vec![0x1b, b'[', b'A'],
+    "down" => vec![0x1b, b'[', b'B'],
+    "right" => vec![0x1b, b'[', b'C'],
+    "left" => vec![0x1b, b'[', b'D'],
 
     // Home/End
-    Key::Home => vec![0x1b, b'[', b'H'],
-    Key::End => vec![0x1b, b'[', b'F'],
+    "home" => vec![0x1b, b'[', b'H'],
+    "end" => vec![0x1b, b'[', b'F'],
 
     // Page Up/Down
-    Key::PageUp => vec![0x1b, b'[', b'5', b'~'],
-    Key::PageDown => vec![0x1b, b'[', b'6', b'~'],
+    "pageup" | "page up" => vec![0x1b, b'[', b'5', b'~'],
+    "pagedown" | "page down" => vec![0x1b, b'[', b'6', b'~'],
 
     // 功能键 F1-F12
-    Key::F1 => vec![0x1b, b'[', b'1', b'1', b'~'],
-    Key::F2 => vec![0x1b, b'[', b'1', b'2', b'~'],
-    Key::F3 => vec![0x1b, b'[', b'1', b'3', b'~'],
-    Key::F4 => vec![0x1b, b'[', b'1', b'4', b'~'],
-    Key::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-    Key::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-    Key::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-    Key::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-    Key::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-    Key::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-    Key::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-    Key::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
+    "f1" => vec![0x1b, b'[', b'1', b'1', b'~'],
+    "f2" => vec![0x1b, b'[', b'1', b'2', b'~'],
+    "f3" => vec![0x1b, b'[', b'1', b'3', b'~'],
+    "f4" => vec![0x1b, b'[', b'1', b'4', b'~'],
+    "f5" => vec![0x1b, b'[', b'1', b'5', b'~'],
+    "f6" => vec![0x1b, b'[', b'1', b'7', b'~'],
+    "f7" => vec![0x1b, b'[', b'1', b'8', b'~'],
+    "f8" => vec![0x1b, b'[', b'1', b'9', b'~'],
+    "f9" => vec![0x1b, b'[', b'2', b'0', b'~'],
+    "f10" => vec![0x1b, b'[', b'2', b'1', b'~'],
+    "f11" => vec![0x1b, b'[', b'2', b'3', b'~'],
+    "f12" => vec![0x1b, b'[', b'2', b'4', b'~'],
 
     // 其他未处理的键
-    Key::Unidentified => vec![],
+    _ => vec![],
   }
 }
