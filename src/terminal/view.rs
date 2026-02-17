@@ -4,7 +4,7 @@ use gpui::*;
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
-  provider: TerminalProvider,
+  provider: Entity<TerminalProvider>,
   content: RenderableContentStatic,
   char_width: Pixels,
   char_height: Pixels,
@@ -17,38 +17,42 @@ impl TerminalView {
     let rows = 24;
     let cols = 80;
 
-    let provider = TerminalProvider::new(cx, rows, cols);
+    // 创建 TerminalProvider 实体
+    let (command_tx, update_rx, event_rx) = TerminalProvider::setup(rows, cols);
+    let provider = cx.new(|_cx| TerminalProvider {
+      command_tx,
+      update_rx,
+      event_rx,
+    });
 
     // 获取初始内容
-    let content = provider.get_update().content.clone();
+    let content = provider.read(cx).get_update().content.clone();
 
-    // 获取实体句柄用于异步更新
-    let entity = cx.entity().downgrade();
-
-    // 启动一个后台任务来监听更新
-    let mut update_rx = provider.update_rx.clone();
-    cx.background_spawn(async move |_this, cx| {
+    // 设置定期刷新以获取终端更新
+    cx.spawn(async move |this, mut cx| {
       loop {
-        if update_rx.changed().await.is_err() {
-          break;
-        }
-        let update = update_rx.borrow().clone();
-        // 使用 update 来更新实体
-        if let Some(this) = entity.upgrade() {
-          cx.update_entity(
+        // 每 50ms 刷新一次
+        cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+        
+        // 更新实体
+        if let Some(this) = this.upgrade() {
+          let result: Result<()> = cx.update_entity(
             &this,
             |this: &mut TerminalView, cx: &mut Context<TerminalView>| {
-              this.content = update.content;
+              // 从 provider 获取最新内容
+              let new_content = this.provider.read(cx).get_update().content.clone();
+              this.content = new_content;
               cx.notify();
             },
-          )
-          .ok();
+          );
+          if result.is_err() {
+            break;
+          }
         } else {
           break;
         }
       }
-    })
-    .detach();
+    }).detach();
 
     Self {
       provider,
@@ -65,25 +69,23 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let modifiers = Modifiers {
+    let _modifiers = Modifiers {
       ctrl: event.keystroke.modifiers.control,
       alt: event.keystroke.modifiers.alt,
       shift: event.keystroke.modifiers.shift,
       meta: event.keystroke.modifiers.platform,
     };
 
-    let key = gpui_key_to_provider_key(&event.keystroke.key);
+    let _key = gpui_key_to_provider_key(&event.keystroke.key);
 
-    // 发送按键到 provider
-    if let Err(e) = self.provider.try_send_key(key, modifiers) {
-      eprintln!("Failed to send key: {:?}", e);
-    }
+    // TODO: 实现按键发送
+    // 由于 send_key 是异步的，我们需要使用 cx.spawn
 
     cx.notify();
   }
 
   /// 渲染终端内容
-  fn render_terminal_content(&self) -> impl IntoElement {
+  fn render_terminal_content(&self, _cx: &mut Context<Self>) -> impl IntoElement {
     let content = self.content.clone();
     let char_width = self.char_width;
     let char_height = self.char_height;
@@ -164,7 +166,7 @@ impl Render for TerminalView {
       .size_full()
       .bg(rgb(0x1e1e1e))
       .cursor_text()
-      .child(self.render_terminal_content())
+      .child(self.render_terminal_content(cx))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))

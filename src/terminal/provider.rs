@@ -1,12 +1,11 @@
 use alacritty_terminal::vte::ansi::NamedColor;
 use alacritty_terminal::{
-  Term,
   grid::Dimensions,
   term::{Config, RenderableContent, Term as AlacrittyTerm},
   vte::ansi::Processor,
 };
 use anyhow::{Context as AnyhowContext, Result};
-use gpui::{AppContext, AsyncApp, Entity, SharedString, Task};
+
 use portable_pty::{CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
 use std::time::{Duration, Instant};
 use std::{io::Read, thread};
@@ -40,7 +39,7 @@ pub struct TerminalUpdate {
 }
 
 impl TerminalUpdate {
-  fn new() -> Self {
+  fn new(rows: usize, cols: usize) -> Self {
     Self {
       content: RenderableContentStatic {
         cells: Vec::new(),
@@ -208,20 +207,22 @@ impl Dimensions for TermDimensions {
 }
 
 pub struct TerminalProvider {
-  pub title: Entity<SharedString>,
-
   pub command_tx: mpsc::Sender<ProviderCommand>,
   pub update_rx: watch::Receiver<TerminalUpdate>,
   pub event_rx: watch::Receiver<alacritty_terminal::event::Event>,
 }
 
 impl TerminalProvider {
-  /// 创建新的 TerminalProvider
-  ///
-  /// # Arguments
-  /// * `rows` - 终端行数
-  /// * `cols` - 终端列数
-  pub fn new(cx: &mut AsyncApp, rows: usize, cols: usize) -> Result<Self> {
+  /// 创建新的 TerminalProvider 所需的数据和任务
+  /// 返回 (command_tx, update_rx, event_rx, background_task)
+  pub fn setup(
+    rows: usize,
+    cols: usize,
+  ) -> (
+    mpsc::Sender<ProviderCommand>,
+    watch::Receiver<TerminalUpdate>,
+    watch::Receiver<alacritty_terminal::event::Event>,
+  ) {
     let (command_tx, command_rx) = mpsc::channel::<ProviderCommand>(100);
 
     // 创建默认的初始值
@@ -241,18 +242,15 @@ impl TerminalProvider {
 
     let (event_tx, event_rx) = watch::channel(alacritty_terminal::event::Event::Wakeup);
 
-    let title = cx.new(|_cx| "".into())?;
-
-    let _ = cx.background_spawn(async move {
-      let _ = run_terminal_worker(rows, cols, command_rx, update_tx, event_tx).await;
+    // 启动后台任务（注意：调用者需要确保在正确的执行器中运行）
+    std::thread::spawn(move || {
+      let runtime = tokio::runtime::Runtime::new().unwrap();
+      runtime.block_on(async {
+        let _ = run_terminal_worker(rows, cols, command_rx, update_tx, event_tx).await;
+      });
     });
 
-    Ok(Self {
-      title,
-      command_tx,
-      update_rx,
-      event_rx,
-    })
+    (command_tx, update_rx, event_rx)
   }
 
   /// 发送按键输入（异步）

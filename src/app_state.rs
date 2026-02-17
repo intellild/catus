@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::Result;
-use gpui::{App, AppContext, AsyncApp, Entity, SharedString};
+use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
-use gpui_component::dock::PanelStyle;
+
+use crate::terminal::provider::TerminalProvider;
 
 /// Tab ID generator
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -15,6 +15,15 @@ pub fn generate_tab_id() -> TabId {
   TabId(TAB_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
+/// Tab 类型
+#[derive(Clone)]
+pub enum TabType {
+  /// 终端 Tab
+  Terminal(Entity<TerminalProvider>),
+  /// SFTP Tab (TODO: 实现 SFTP)
+  Sftp,
+}
+
 #[derive(Clone)]
 pub struct TabState {
   pub title: SharedString,
@@ -23,14 +32,13 @@ pub struct TabState {
 
 impl TabState {
   pub fn new(
-    cx: &mut AsyncApp,
     title: impl Into<SharedString>,
     icon: IconName,
-  ) -> Result<Entity<Self>> {
-    cx.new(move |_| Self {
+  ) -> Self {
+    Self {
       title: title.into(),
       icon,
-    })
+    }
   }
 }
 
@@ -38,16 +46,55 @@ impl TabState {
 pub struct TabItem {
   pub id: TabId,
   pub state: Entity<TabState>,
+  pub tab_type: TabType,
 }
 
 impl TabItem {
-  pub fn new(cx: &mut AsyncApp, title: impl Into<SharedString>) -> Result<Self> {
-    let state = TabState::new(cx, title, IconName::WindowMaximize)?;
+  /// 创建一个新的 TabItem
+  pub fn new(
+    cx: &mut gpui::Context<AppState>,
+    title: impl Into<SharedString>,
+    icon: IconName,
+    tab_type: TabType,
+  ) -> Self {
+    let state = cx.new(|_cx| TabState::new(title, icon));
 
-    Ok(Self {
+    Self {
       id: generate_tab_id(),
       state,
-    })
+      tab_type,
+    }
+  }
+
+  /// 创建一个新的 Terminal Tab
+  pub fn new_terminal(
+    cx: &mut gpui::Context<AppState>,
+    rows: usize,
+    cols: usize,
+  ) -> Self {
+    // 创建 TerminalProvider
+    let (command_tx, update_rx, event_rx) = TerminalProvider::setup(rows, cols);
+    
+    let provider = cx.new(|_cx| TerminalProvider {
+      command_tx,
+      update_rx,
+      event_rx,
+    });
+    
+    Self {
+      id: generate_tab_id(),
+      state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
+      tab_type: TabType::Terminal(provider),
+    }
+  }
+
+  /// 创建一个新的 SFTP Tab (TODO: 实现)
+  pub fn new_sftp(cx: &mut gpui::Context<AppState>) -> Self {
+    Self {
+      id: generate_tab_id(),
+      state: cx.new(|_cx| TabState::new("SFTP", IconName::Folder)),
+      tab_type: TabType::Sftp,
+    }
   }
 }
 
@@ -58,14 +105,15 @@ pub struct AppState {
 }
 
 impl AppState {
-  pub fn new(cx: &mut AsyncApp) -> Result<Self> {
-    let tabs = vec![TabItem::new(cx, "Welcome")?];
+  pub fn new(cx: &mut gpui::Context<Self>) -> Self {
+    // 创建一个默认的 Terminal Tab
+    let tabs = vec![TabItem::new_terminal(cx, 24, 80)];
     let active_tab_id = Some(tabs[0].id);
 
-    Ok(Self {
+    Self {
       tabs,
       active_tab_id,
-    })
+    }
   }
 
   pub fn add_tab(&mut self, tab: TabItem) -> TabId {

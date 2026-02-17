@@ -7,6 +7,7 @@ mod terminal;
 mod workspace;
 
 use main_view::MainView;
+use workspace::App as CatusApp;
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
@@ -15,26 +16,25 @@ fn main() {
     // Initialize GPUI Component
     gpui_component::init(cx);
 
-    cx.spawn(async move |cx| {
-      cx.open_window(
-        WindowOptions {
-          titlebar: Some(TitlebarOptions {
-            title: None,
-            appears_transparent: true,
-            traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
-          }),
-          ..WindowOptions::default()
-        },
-        |window, cx| {
-          cx.activate(true);
+    // 创建 App，包含一个默认的 Workspace
+    let catus_app = cx.new(|cx| CatusApp::new(cx));
+    let workspace = catus_app.read(cx).workspace().clone();
 
-          let view = cx.new(|_| MainView::new());
-          cx.new(|cx| Root::new(view, window, cx))
-        },
-      )?;
+    cx.open_window(
+      WindowOptions {
+        titlebar: Some(TitlebarOptions {
+          title: None,
+          appears_transparent: true,
+          traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
+        }),
+        ..WindowOptions::default()
+      },
+      |window, cx| {
+        cx.activate(true);
 
-      Ok::<_, anyhow::Error>(())
-    })
-    .detach();
+        let view = cx.new(|_| MainView::new(workspace));
+        cx.new(|cx| Root::new(view, window, cx))
+      },
+    ).ok();
   });
 }

@@ -1,44 +1,50 @@
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
 
-use crate::app_state::{AppState, TabItem};
+use crate::app_state::{AppState, TabType};
 use crate::terminal::TerminalView;
+use crate::workspace::Workspace;
 
 /// Main view
 pub struct MainView {
-  pub state: Entity<AppState>,
+  pub workspace: Entity<Workspace>,
 }
 
 impl MainView {
-  pub fn new(app_state: Entity<AppState>) -> Self {
-    Self { state: app_state }
+  pub fn new(workspace: Entity<Workspace>) -> Self {
+    Self { workspace }
+  }
+
+  fn app_state(&self, cx: &App) -> Entity<AppState> {
+    self.workspace.read(cx).state.clone()
   }
 
   fn handle_tab_click(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    // cx.background_spawn()
-    if let Some(tab) = self.state.read(cx).tabs.get(index) {
+    let app_state = self.app_state(cx);
+    if let Some(tab) = app_state.read(cx).tabs.get(index) {
       let id = tab.id;
-      if self.state.as_mut(cx).activate_tab(id) {
+      if app_state.update(cx, |state, _cx| state.activate_tab(id)) {
         cx.notify();
       }
     }
   }
 
   fn handle_tab_close(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(tab) = self.state.read(cx).tabs.get(index) {
+    let app_state = self.app_state(cx);
+    if let Some(tab) = app_state.read(cx).tabs.get(index) {
       let id = tab.id;
-      if self.state.as_mut(cx).close_tab(id) {
+      if app_state.update(cx, |state, _cx| state.close_tab(id)) {
         cx.notify();
       }
     }
   }
 
-  fn handle_add_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-    let new_tab =
-      TabItem::new(format!("Tab {}", self.state.tabs.len() + 1)).with_icon(IconName::File);
-    self.state.add_tab(new_tab);
-    cx.notify();
+  fn handle_add_terminal(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    // 在当前 workspace 中添加新的 Terminal Tab
+    self.workspace.update(cx, |workspace, cx| {
+      workspace.add_terminal_tab(cx);
+      cx.notify();
+    });
   }
 
   fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -50,8 +56,9 @@ impl MainView {
     #[cfg(not(target_os = "macos"))]
     let left_padding = px(12.);
 
-    let tabs = self.state.tabs.clone();
-    let active_index = self.state.active_index().unwrap_or(0);
+    let app_state = self.app_state(cx);
+    let tabs = app_state.read(cx).tabs.clone();
+    let active_index = app_state.read(cx).active_index().unwrap_or(0);
 
     div()
       .id("custom-title-bar")
@@ -125,42 +132,68 @@ impl MainView {
               .cursor_pointer()
               .hover(|style| style.bg(cx.theme().secondary_hover))
               .on_click(cx.listener(|this, _, window, cx| {
-                this.handle_add_tab(window, cx);
+                this.handle_add_terminal(window, cx);
               }))
               .child(Icon::new(IconName::Plus).small()),
           ),
       )
   }
+
+  fn render_active_tab_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let app_state = self.app_state(cx);
+    let active_tab = app_state.read(cx).active_tab().cloned();
+
+    if let Some(tab) = active_tab {
+      match &tab.tab_type {
+        TabType::Terminal(_provider) => {
+          // 创建 TerminalView 来显示终端
+          let terminal_view = cx.new(|cx| TerminalView::new(cx));
+          
+          div()
+            .flex_1()
+            .size_full()
+            .child(terminal_view)
+            .into_any_element()
+        }
+        TabType::Sftp => {
+          // TODO: 实现 SFTP 视图
+          div()
+            .flex_1()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child("SFTP view not implemented yet")
+            .into_any_element()
+        }
+      }
+    } else {
+      // 没有激活的 Tab
+      div()
+        .flex_1()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child("No active tab")
+        .into_any_element()
+    }
+  }
 }
 
 impl Render for MainView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // 获取或创建 TerminalView
-    let terminal_view = cx.new(|cx| TerminalView::new(cx));
-
     div()
       .v_flex()
       .size_full()
       .child(self.render_title_bar(cx))
       .child(
-        // Main content area with terminal
+        // Main content area
         div()
           .v_flex()
           .flex_1()
-          .child(
-            div()
-              .text_xl()
-              .font_weight(FontWeight::SEMIBOLD)
-              .p_4()
-              .child(
-                self
-                  .state
-                  .active_tab()
-                  .map(|t| t.state.read(cx).title.clone())
-                  .unwrap_or_else(|| "No Tab".into()),
-              ),
-          )
-          .child(div().flex_1().p_4().child(terminal_view)),
+          .size_full()
+          .child(self.render_active_tab_content(cx)),
       )
   }
 }
