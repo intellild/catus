@@ -1,12 +1,13 @@
 use gpui::*;
 use gpui_component::Root;
 
+mod app;
 mod main_view;
 mod terminal;
 mod workspace;
 
 use main_view::MainView;
-use workspace::App as CatusApp;
+use app::App as CatusApp;
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
