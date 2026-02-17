@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
 
-use crate::terminal::provider::TerminalProvider;
+use crate::terminal::TerminalProvider;
 
 /// Tab ID generator
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -68,14 +68,7 @@ impl TabItem {
   /// 创建一个新的 Terminal Tab
   pub fn new_terminal(cx: &mut gpui::Context<Workspace>, rows: usize, cols: usize) -> Self {
     // 创建 TerminalProvider，使用 background_executor 启动后台任务
-    let (command_tx, update_rx, event_rx) =
-      TerminalProvider::setup(&cx.background_executor(), rows, cols);
-
-    let provider = cx.new(|_cx| TerminalProvider {
-      command_tx,
-      update_rx,
-      event_rx,
-    });
+    let provider = cx.new(|cx| TerminalProvider::new(&cx.background_executor(), rows, cols));
 
     Self {
       id: generate_tab_id(),

@@ -1,20 +1,58 @@
-use crate::terminal::provider::{RenderableContentStatic, TerminalProvider};
+use crate::terminal::provider::{TerminalContent, TerminalProvider};
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::*;
+use std::mem;
 
 /// 终端元素布局状态
 pub struct LayoutState {
   bounds: Bounds<Pixels>,
-  content: RenderableContentStatic,
+  content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
   background_color: Hsla,
   cursor_visible: bool,
 }
 
+/// 批处理的文本运行（类似 Zed 的 BatchedTextRun）
+#[derive(Debug)]
+pub struct BatchedTextRun {
+  pub start_row: usize,
+  pub start_col: usize,
+  pub text: String,
+  pub cell_count: usize,
+  pub fg: [u8; 3],
+  pub bg: [u8; 3],
+  pub bold: bool,
+}
+
+impl BatchedTextRun {
+  fn new(start_row: usize, start_col: usize, fg: [u8; 3], bg: [u8; 3], bold: bool) -> Self {
+    Self {
+      start_row,
+      start_col,
+      text: String::with_capacity(100),
+      cell_count: 0,
+      fg,
+      bg,
+      bold,
+    }
+  }
+
+  fn can_append(&self, fg: [u8; 3], bg: [u8; 3], bold: bool) -> bool {
+    self.fg == fg && self.bg == bg && self.bold == bold
+  }
+
+  fn append_char(&mut self, c: char) {
+    self.text.push(c);
+    self.cell_count += 1;
+  }
+}
+
 /// 自定义 Terminal Element，使用 paint 方式渲染终端内容
 pub struct TerminalElement {
   provider: Entity<TerminalProvider>,
-  content: RenderableContentStatic,
+  content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
   focus_handle: FocusHandle,
@@ -24,7 +62,7 @@ impl TerminalElement {
   /// 创建新的 TerminalElement
   pub fn new(
     provider: Entity<TerminalProvider>,
-    content: RenderableContentStatic,
+    content: TerminalContent,
     focus_handle: FocusHandle,
   ) -> Self {
     Self {
@@ -58,43 +96,70 @@ impl TerminalElement {
     self.char_height = px(14. * 1.2);
   }
 
+  /// 将 alacritty 颜色转换为 RGB 数组
+  fn color_to_rgb(color: &alacritty_terminal::vte::ansi::Color) -> [u8; 3] {
+    match color {
+      AnsiColor::Named(name) => match name {
+        NamedColor::Black => [0, 0, 0],
+        NamedColor::Red => [255, 0, 0],
+        NamedColor::Green => [0, 255, 0],
+        NamedColor::Yellow => [255, 255, 0],
+        NamedColor::Blue => [0, 0, 255],
+        NamedColor::Magenta => [255, 0, 255],
+        NamedColor::Cyan => [0, 255, 255],
+        NamedColor::White => [255, 255, 255],
+        NamedColor::BrightBlack => [64, 64, 64],
+        NamedColor::BrightRed => [255, 64, 64],
+        NamedColor::BrightGreen => [64, 255, 64],
+        NamedColor::BrightYellow => [255, 255, 64],
+        NamedColor::BrightBlue => [64, 64, 255],
+        NamedColor::BrightMagenta => [255, 64, 255],
+        NamedColor::BrightCyan => [64, 255, 255],
+        NamedColor::BrightWhite => [255, 255, 255],
+        NamedColor::Foreground => [212, 212, 212],
+        NamedColor::Background => [30, 30, 30],
+        _ => [212, 212, 212],
+      },
+      AnsiColor::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
+      AnsiColor::Indexed(idx) => {
+        // ANSI 256 色表简化处理
+        match idx {
+          0 => [0, 0, 0],
+          1 => [255, 0, 0],
+          2 => [0, 255, 0],
+          3 => [255, 255, 0],
+          4 => [0, 0, 255],
+          5 => [255, 0, 255],
+          6 => [0, 255, 255],
+          7 => [255, 255, 255],
+          _ => [212, 212, 212],
+        }
+      }
+    }
+  }
+
   /// 将 RGB 数组转换为 Hsla
   fn rgb_to_hsla(rgb: [u8; 3]) -> Hsla {
     gpui::rgb((rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32).into()
   }
 
   /// 创建文本运行
-  fn create_text_run(len: usize, font: &Font, color: Hsla) -> TextRun {
+  fn create_text_run(len: usize, font: &Font, color: Hsla, bold: bool) -> TextRun {
     TextRun {
       len,
-      font: font.clone(),
+      font: Font {
+        weight: if bold {
+          FontWeight::BOLD
+        } else {
+          FontWeight::NORMAL
+        },
+        ..font.clone()
+      },
       color,
       background_color: None,
       underline: None,
       strikethrough: None,
     }
-  }
-
-  /// 绘制文本
-  fn paint_text(
-    window: &mut Window,
-    text: impl Into<SharedString>,
-    font_size: Pixels,
-    font: &Font,
-    fg: [u8; 3],
-    char_width: Pixels,
-    pos: Point<Pixels>,
-    char_height: Pixels,
-    cx: &mut App,
-  ) {
-    let shared_text: SharedString = text.into();
-    let fg_color = Self::rgb_to_hsla(fg);
-    let text_run = Self::create_text_run(shared_text.len(), font, fg_color);
-
-    let _ = window
-      .text_system()
-      .shape_line(shared_text, font_size, &[text_run], Some(char_width))
-      .paint(pos, char_height, window, cx);
   }
 
   /// 绘制单元格背景
@@ -146,8 +211,12 @@ impl TerminalElement {
     window.paint_quad(fill(cursor_bounds, gpui::rgba(0x80ffffff)));
 
     // 绘制光标处的字符（反色）
-    let cursor_run =
-      Self::create_text_run(cursor_char.len_utf8(), font, gpui::rgb(0x000000).into());
+    let cursor_run = Self::create_text_run(
+      cursor_char.len_utf8(),
+      font,
+      gpui::rgb(0x000000).into(),
+      false,
+    );
 
     let _ = window
       .text_system()
@@ -160,32 +229,80 @@ impl TerminalElement {
       .paint(Point::new(cursor_x, cursor_y), char_height, window, cx);
   }
 
-  /// 刷新批量绘制的文本
-  fn flush_text_batch(
-    window: &mut Window,
-    current_text: &str,
-    current_fg: [u8; 3],
-    font: &Font,
-    font_size: Pixels,
-    char_width: Pixels,
-    current_pos: Point<Pixels>,
-    char_height: Pixels,
-    cx: &mut App,
-  ) {
-    if current_text.is_empty() {
-      return;
+  /// 布局网格 - 将单元格批处理（类似 Zed 的 layout_grid）
+  fn layout_grid(content: &TerminalContent) -> Vec<BatchedTextRun> {
+    let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
+    let mut current_batch: Option<BatchedTextRun> = None;
+
+    let mut last_row: usize = 0;
+    let mut last_col: usize = 0;
+
+    for indexed in &content.cells {
+      let row = indexed.point.line.0 as usize;
+      let col = indexed.point.column.0 as usize;
+      let cell = &indexed.cell;
+
+      // 跳过宽字符的 spacer
+      if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+        continue;
+      }
+
+      let mut fg = Self::color_to_rgb(&cell.fg);
+      let mut bg = Self::color_to_rgb(&cell.bg);
+
+      // 处理反色（inverse）标志
+      if cell.flags.contains(Flags::INVERSE) {
+        mem::swap(&mut fg, &mut bg);
+      }
+
+      let bold = cell.flags.intersects(Flags::BOLD);
+      let c = cell.c;
+
+      // 跳过空白字符但保留背景
+      if c == ' '
+        && bg == [30, 30, 30]
+        && !cell.flags.intersects(Flags::UNDERLINE | Flags::STRIKEOUT)
+      {
+        if let Some(batch) = current_batch.take() {
+          batched_runs.push(batch);
+        }
+        last_row = row;
+        last_col = col;
+        continue;
+      }
+
+      // 检查是否可以追加到当前批次
+      let can_append = if let Some(ref batch) = current_batch {
+        batch.can_append(fg, bg, bold) && row == last_row && col == last_col + 1
+      } else {
+        false
+      };
+
+      if can_append {
+        if let Some(ref mut batch) = current_batch {
+          batch.append_char(c);
+        }
+      } else {
+        // 保存当前批次
+        if let Some(batch) = current_batch.take() {
+          batched_runs.push(batch);
+        }
+        // 创建新批次
+        let mut new_batch = BatchedTextRun::new(row as usize, col as usize, fg, bg, bold);
+        new_batch.append_char(c);
+        current_batch = Some(new_batch);
+      }
+
+      last_row = row;
+      last_col = col;
     }
-    Self::paint_text(
-      window,
-      current_text.to_string(),
-      font_size,
-      font,
-      current_fg,
-      char_width,
-      current_pos,
-      char_height,
-      cx,
-    );
+
+    // 保存最后一个批次
+    if let Some(batch) = current_batch {
+      batched_runs.push(batch);
+    }
+
+    batched_runs
   }
 }
 
@@ -228,7 +345,12 @@ impl Element for TerminalElement {
     self.calculate_char_dimensions(window);
 
     // 从 provider 获取最新内容
-    let content = self.provider.read(cx).get_update().content.clone();
+    let content = self
+      .provider
+      .read(cx)
+      .last_content()
+      .cloned()
+      .unwrap_or_else(|| self.content.clone());
     self.content = content.clone();
 
     LayoutState {
@@ -263,80 +385,68 @@ impl Element for TerminalElement {
     let font_size = px(14.);
     let font = Self::create_font();
 
-    // 批量绘制相同颜色的文本以提高性能
-    let mut current_text = String::new();
-    let mut current_pos = Point::default();
-    let mut current_fg = [212u8, 212, 212];
-    let mut last_row = 0usize;
-    let mut last_col = 0usize;
+    // 先绘制所有单元格背景
+    for indexed in &content.cells {
+      let row = indexed.point.line.0 as usize;
+      let col = indexed.point.column.0 as usize;
+      let cell = &indexed.cell;
 
-    for (row, col, c, fg, bg, _bold) in &content.cells {
-      let row = *row;
-      let col = *col;
-      let fg = *fg;
+      let mut bg = Self::color_to_rgb(&cell.bg);
 
-      // 绘制单元格背景
-      Self::paint_cell_background(window, origin, row, col, *bg, char_width, char_height);
-
-      // 如果颜色变化或位置不连续，先绘制之前的文本
-      if fg != current_fg
-        || row != last_row
-        || (row == last_row && col != last_col + 1 && !current_text.is_empty())
-      {
-        Self::flush_text_batch(
-          window,
-          &current_text,
-          current_fg,
-          &font,
-          font_size,
-          char_width,
-          current_pos,
-          char_height,
-          cx,
-        );
-
-        current_text.clear();
-        current_fg = fg;
-        current_pos = Point::new(
-          origin.x + col as f32 * char_width,
-          origin.y + row as f32 * char_height,
-        );
+      // 处理反色（inverse）标志
+      if cell.flags.contains(Flags::INVERSE) {
+        bg = Self::color_to_rgb(&cell.fg);
       }
 
-      current_text.push(*c);
-      last_row = row;
-      last_col = col;
+      Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
     }
 
-    // 绘制剩余的文本
-    Self::flush_text_batch(
-      window,
-      &current_text,
-      current_fg,
-      &font,
-      font_size,
-      char_width,
-      current_pos,
-      char_height,
-      cx,
-    );
+    // 批处理绘制文本
+    let batched_runs = Self::layout_grid(content);
+
+    for batch in &batched_runs {
+      if batch.text.is_empty() {
+        continue;
+      }
+
+      let fg_color = Self::rgb_to_hsla(batch.fg);
+      let pos = Point::new(
+        origin.x + batch.start_col as f32 * char_width,
+        origin.y + batch.start_row as f32 * char_height,
+      );
+
+      let text_run = Self::create_text_run(batch.text.len(), &font, fg_color, batch.bold);
+
+      let _ = window
+        .text_system()
+        .shape_line(
+          batch.text.clone().into(),
+          font_size,
+          &[text_run],
+          Some(char_width),
+        )
+        .paint(pos, char_height, window, cx);
+    }
 
     // 绘制光标
-    if content.cursor_visible && layout.cursor_visible {
-      // 查找光标位置的字符
-      let cursor_char = content
-        .cells
-        .iter()
-        .find(|(r, c, _, _, _, _)| *r == content.cursor_row && *c == content.cursor_col)
-        .map(|(_, _, c, _, _, _)| *c)
-        .unwrap_or(' ');
+    let cursor = &content.cursor;
+    let cursor_row = cursor.point.line.0 as usize;
+    let cursor_col = cursor.point.column.0 as usize;
 
+    // 检查光标是否可见（根据光标形状）
+    let cursor_visible = layout.cursor_visible
+      && !matches!(
+        cursor.shape,
+        alacritty_terminal::vte::ansi::CursorShape::Hidden
+      );
+
+    if cursor_visible {
       Self::paint_cursor(
         window,
         origin,
-        content.cursor_row,
-        content.cursor_col,
-        cursor_char,
+        cursor_row,
+        cursor_col,
+        content.cursor_char,
         &font,
         font_size,
         char_width,

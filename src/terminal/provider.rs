@@ -1,12 +1,18 @@
-use alacritty_terminal::vte::ansi::NamedColor;
-use alacritty_terminal::{
-  grid::Dimensions,
-  term::{Config, RenderableContent, Term as AlacrittyTerm},
-  vte::ansi::Processor,
+use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+use alacritty_terminal::selection::SelectionRange;
+use alacritty_terminal::sync::FairMutex;
+
+use alacritty_terminal::term::{
+  Config, RenderableCursor, Term as AlacrittyTerm, TermMode, cell::Cell,
 };
+use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Context as AnyhowContext, Result};
-use gpui::{BackgroundExecutor, Keystroke};
+use gpui::{BackgroundExecutor, Bounds, Keystroke, Pixels};
 use portable_pty::{CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
+use std::ops::Deref;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{io::Read, thread};
 use tokio::sync::{mpsc, watch};
@@ -27,160 +33,149 @@ pub enum ProviderCommand {
   Stop,
 }
 
-/// TerminalProvider 发送给 UI 的更新
+/// 带索引的单元格（类似 Zed 的 IndexedCell）
+#[derive(Clone, Debug)]
+pub struct IndexedCell {
+  pub point: AlacPoint,
+  pub cell: Cell,
+}
+
+impl Deref for IndexedCell {
+  type Target = Cell;
+
+  #[inline]
+  fn deref(&self) -> &Cell {
+    &self.cell
+  }
+}
+
+/// 终端边界信息（类似 Zed 的 TerminalBounds）
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TerminalBounds {
+  pub cell_width: Pixels,
+  pub line_height: Pixels,
+  pub bounds: Bounds<Pixels>,
+}
+
+impl TerminalBounds {
+  pub fn new(line_height: Pixels, cell_width: Pixels, bounds: Bounds<Pixels>) -> Self {
+    TerminalBounds {
+      cell_width,
+      line_height,
+      bounds,
+    }
+  }
+
+  pub fn num_lines(&self) -> usize {
+    (self.bounds.size.height / self.line_height).floor() as usize
+  }
+
+  pub fn num_columns(&self) -> usize {
+    (self.bounds.size.width / self.cell_width).floor() as usize
+  }
+}
+
+impl Dimensions for TerminalBounds {
+  fn total_lines(&self) -> usize {
+    self.num_lines()
+  }
+
+  fn screen_lines(&self) -> usize {
+    self.num_lines()
+  }
+
+  fn columns(&self) -> usize {
+    self.num_columns()
+  }
+}
+
+/// 终端内容快照（类似 Zed 的 TerminalContent）
+#[derive(Clone)]
+pub struct TerminalContent {
+  pub cells: Vec<IndexedCell>,
+  pub mode: TermMode,
+  pub display_offset: usize,
+  pub selection: Option<SelectionRange>,
+  pub cursor: RenderableCursor,
+  pub cursor_char: char,
+  pub terminal_bounds: TerminalBounds,
+  pub scrolled_to_top: bool,
+  pub scrolled_to_bottom: bool,
+}
+
+impl Default for TerminalContent {
+  fn default() -> Self {
+    Self {
+      cells: Vec::new(),
+      mode: TermMode::default(),
+      display_offset: 0,
+      selection: None,
+      cursor: RenderableCursor {
+        shape: alacritty_terminal::vte::ansi::CursorShape::Block,
+        point: AlacPoint::new(Line(0), Column(0)),
+      },
+      cursor_char: ' ',
+      terminal_bounds: TerminalBounds::default(),
+      scrolled_to_top: true,
+      scrolled_to_bottom: true,
+    }
+  }
+}
+
+impl std::fmt::Debug for TerminalContent {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TerminalContent")
+      .field("cells_count", &self.cells.len())
+      .field("mode", &self.mode)
+      .field("display_offset", &self.display_offset)
+      .field("selection", &self.selection)
+      .field("cursor_char", &self.cursor_char)
+      .field("terminal_bounds", &self.terminal_bounds)
+      .field("scrolled_to_top", &self.scrolled_to_top)
+      .field("scrolled_to_bottom", &self.scrolled_to_bottom)
+      .finish()
+  }
+}
+
+/// 终端更新事件
+#[derive(Clone, Debug)]
+pub enum TerminalEvent {
+  Wakeup,
+  TitleChanged(String),
+  Bell,
+}
+
+/// TerminalProvider 发送给 UI 的更新（保留用于向后兼容）
 #[derive(Clone)]
 pub struct TerminalUpdate {
-  /// 可渲染的终端内容
-  pub content: RenderableContentStatic,
-  /// 终端行数
+  pub content: TerminalContent,
   pub rows: usize,
-  /// 终端列数
   pub cols: usize,
 }
 
 impl TerminalUpdate {
-  fn new(rows: usize, cols: usize) -> Self {
+  fn new(content: TerminalContent, rows: usize, cols: usize) -> Self {
     Self {
-      content: RenderableContentStatic {
-        cells: Vec::new(),
-        cursor_row: 0,
-        cursor_col: 0,
-        cursor_visible: false,
-        display_lines: rows,
-        display_cols: cols,
-      },
+      content,
       rows,
       cols,
     }
   }
 }
 
-/// 静态化的 RenderableContent 数据，可以跨线程发送
-#[derive(Clone)]
-pub struct RenderableContentStatic {
-  /// 单元格数据: (行, 列, 字符, 前景色RGB, 背景色RGB, 是否粗体)
-  pub cells: Vec<(usize, usize, char, [u8; 3], [u8; 3], bool)>,
-  /// 光标行位置
-  pub cursor_row: usize,
-  /// 光标列位置
-  pub cursor_col: usize,
-  /// 光标是否可见
-  pub cursor_visible: bool,
-  /// 显示的行数
-  pub display_lines: usize,
-  /// 显示的列数
-  pub display_cols: usize,
-}
-
-/// 将 alacritty Terminal 的 RenderableContent 转换为静态数据
-fn convert_content_to_static(
-  content: RenderableContent,
-  rows: usize,
-  cols: usize,
-) -> RenderableContentStatic {
-  let mut cells = Vec::new();
-
-  for indexed in content.display_iter {
-    let row = indexed.point.line.0 as usize;
-    let col = indexed.point.column.0 as usize;
-    let cell = &indexed.cell;
-
-    let c = cell.c;
-
-    // 获取前景色
-    let fg = match cell.fg {
-      alacritty_terminal::vte::ansi::Color::Named(name) => match name {
-        NamedColor::Black => [0, 0, 0],
-        NamedColor::Red => [255, 0, 0],
-        NamedColor::Green => [0, 255, 0],
-        NamedColor::Yellow => [255, 255, 0],
-        NamedColor::Blue => [0, 0, 255],
-        NamedColor::Magenta => [255, 0, 255],
-        NamedColor::Cyan => [0, 255, 255],
-        NamedColor::White => [255, 255, 255],
-        NamedColor::BrightBlack => [64, 64, 64],
-        NamedColor::BrightRed => [255, 64, 64],
-        NamedColor::BrightGreen => [64, 255, 64],
-        NamedColor::BrightYellow => [255, 255, 64],
-        NamedColor::BrightBlue => [64, 64, 255],
-        NamedColor::BrightMagenta => [255, 64, 255],
-        NamedColor::BrightCyan => [64, 255, 255],
-        NamedColor::BrightWhite => [255, 255, 255],
-        NamedColor::Foreground => [212, 212, 212],
-        NamedColor::Background => [30, 30, 30],
-        _ => [212, 212, 212],
-      },
-      alacritty_terminal::vte::ansi::Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
-      _ => [212, 212, 212],
-    };
-
-    // 获取背景色
-    let bg = match cell.bg {
-      alacritty_terminal::vte::ansi::Color::Named(name) => match name {
-        NamedColor::Black => [0, 0, 0],
-        NamedColor::Red => [255, 0, 0],
-        NamedColor::Green => [0, 255, 0],
-        NamedColor::Yellow => [255, 255, 0],
-        NamedColor::Blue => [0, 0, 255],
-        NamedColor::Magenta => [255, 0, 255],
-        NamedColor::Cyan => [0, 255, 255],
-        NamedColor::White => [255, 255, 255],
-        NamedColor::BrightBlack => [64, 64, 64],
-        NamedColor::BrightRed => [255, 64, 64],
-        NamedColor::BrightGreen => [64, 255, 64],
-        NamedColor::BrightYellow => [255, 255, 64],
-        NamedColor::BrightBlue => [64, 64, 255],
-        NamedColor::BrightMagenta => [255, 64, 255],
-        NamedColor::BrightCyan => [64, 255, 255],
-        NamedColor::BrightWhite => [255, 255, 255],
-        NamedColor::Foreground => [30, 30, 30],
-        NamedColor::Background => [30, 30, 30],
-        _ => [30, 30, 30],
-      },
-      alacritty_terminal::vte::ansi::Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
-      _ => [30, 30, 30],
-    };
-
-    let bold = cell
-      .flags
-      .intersects(alacritty_terminal::term::cell::Flags::BOLD);
-
-    cells.push((row, col, c, fg, bg, bold));
-  }
-
-  // 获取光标位置（RenderableCursor 直接使用）
-  let cursor = &content.cursor;
-  let cursor_row = cursor.point.line.0 as usize;
-  let cursor_col = cursor.point.column.0 as usize;
-  // 光标可见性由 shape 控制，这里简化处理为始终可见
-  let cursor_visible = true;
-
-  let display_lines = rows;
-  let display_cols = cols;
-
-  RenderableContentStatic {
-    cells,
-    cursor_row,
-    cursor_col,
-    cursor_visible,
-    display_lines,
-    display_cols,
-  }
-}
-
 /// Channel 事件监听器 - 将 alacritty 事件转发到 watch channel
 pub struct ChannelEventListener {
-  tx: watch::Sender<alacritty_terminal::event::Event>,
+  tx: watch::Sender<AlacTermEvent>,
 }
 
 impl ChannelEventListener {
-  pub fn new(tx: watch::Sender<alacritty_terminal::event::Event>) -> Self {
+  pub fn new(tx: watch::Sender<AlacTermEvent>) -> Self {
     Self { tx }
   }
 }
 
-impl alacritty_terminal::event::EventListener for ChannelEventListener {
-  fn send_event(&self, event: alacritty_terminal::event::Event) {
+impl EventListener for ChannelEventListener {
+  fn send_event(&self, event: AlacTermEvent) {
     // 通知有事件发生，UI 需要刷新（watch channel 只保留最新事件）
     let _ = self.tx.send(event);
   }
@@ -206,10 +201,97 @@ impl Dimensions for TermDimensions {
   }
 }
 
+/// 核心终端结构（类似 Zed 的 Terminal）
+pub struct Terminal {
+  term: Arc<FairMutex<AlacrittyTerm<ChannelEventListener>>>,
+  pub last_content: TerminalContent,
+  command_tx: mpsc::Sender<ProviderCommand>,
+}
+
+impl Terminal {
+  /// 创建新的 Terminal
+  fn new(
+    term: Arc<FairMutex<AlacrittyTerm<ChannelEventListener>>>,
+    command_tx: mpsc::Sender<ProviderCommand>,
+  ) -> Self {
+    Self {
+      term,
+      last_content: TerminalContent::default(),
+      command_tx,
+    }
+  }
+
+  /// 同步终端状态并更新 last_content（类似 Zed 的 sync 方法）
+  pub fn sync(&mut self) {
+    let term = self.term.clone();
+    let terminal = term.lock();
+    self.last_content = Self::make_content(&terminal, &self.last_content);
+  }
+
+  /// 生成 TerminalContent（类似 Zed 的 make_content）
+  fn make_content(
+    term: &AlacrittyTerm<ChannelEventListener>,
+    last_content: &TerminalContent,
+  ) -> TerminalContent {
+    let content = term.renderable_content();
+
+    // 预分配容量
+    let estimated_size = content.display_iter.size_hint().0;
+    let mut cells = Vec::with_capacity(estimated_size);
+
+    cells.extend(content.display_iter.map(|ic| IndexedCell {
+      point: ic.point,
+      cell: ic.cell.clone(),
+    }));
+
+    TerminalContent {
+      cells,
+      mode: content.mode,
+      display_offset: content.display_offset,
+      selection: content.selection,
+      cursor: content.cursor,
+      cursor_char: term.grid()[content.cursor.point].c,
+      terminal_bounds: last_content.terminal_bounds,
+      scrolled_to_top: content.display_offset == term.history_size(),
+      scrolled_to_bottom: content.display_offset == 0,
+    }
+  }
+
+  /// 向 PTY 写入数据
+  pub fn input(&self, data: impl Into<std::borrow::Cow<'static, [u8]>>) {
+    let data = data.into();
+    let _ = self
+      .command_tx
+      .try_send(ProviderCommand::WriteData(data.into_owned()));
+  }
+
+  /// 调整终端大小
+  pub fn resize(&self, rows: usize, cols: usize) {
+    let _ = self
+      .command_tx
+      .try_send(ProviderCommand::Resize { rows, cols });
+  }
+
+  /// 获取当前内容
+  pub fn last_content(&self) -> &TerminalContent {
+    &self.last_content
+  }
+}
+
+impl TerminalProvider {
+  /// 向 PTY 写入数据（便捷方法）
+  pub fn input(&self, data: impl Into<std::borrow::Cow<'static, [u8]>>) {
+    if let Some(ref terminal) = self.terminal {
+      terminal.input(data);
+    }
+  }
+}
+
 pub struct TerminalProvider {
   pub command_tx: mpsc::Sender<ProviderCommand>,
   pub update_rx: watch::Receiver<TerminalUpdate>,
-  pub event_rx: watch::Receiver<alacritty_terminal::event::Event>,
+  pub event_rx: watch::Receiver<AlacTermEvent>,
+  pub terminal: Option<Terminal>,
 }
 
 impl TerminalProvider {
@@ -222,35 +304,63 @@ impl TerminalProvider {
   ) -> (
     mpsc::Sender<ProviderCommand>,
     watch::Receiver<TerminalUpdate>,
-    watch::Receiver<alacritty_terminal::event::Event>,
+    watch::Receiver<AlacTermEvent>,
+    Arc<FairMutex<AlacrittyTerm<ChannelEventListener>>>,
   ) {
     let (command_tx, command_rx) = mpsc::channel::<ProviderCommand>(100);
 
     // 创建默认的初始值
-    let initial_update = TerminalUpdate {
-      content: RenderableContentStatic {
-        cells: Vec::new(),
-        cursor_row: 0,
-        cursor_col: 0,
-        cursor_visible: false,
-        display_lines: rows,
-        display_cols: cols,
+    let initial_content = TerminalContent {
+      cells: Vec::new(),
+      mode: TermMode::default(),
+      display_offset: 0,
+      selection: None,
+      cursor: RenderableCursor {
+        shape: alacritty_terminal::vte::ansi::CursorShape::Block,
+        point: AlacPoint::new(Line(0), Column(0)),
       },
-      rows,
-      cols,
+      cursor_char: ' ',
+      terminal_bounds: TerminalBounds::default(),
+      scrolled_to_top: true,
+      scrolled_to_bottom: true,
     };
+    let initial_update = TerminalUpdate::new(initial_content, rows, cols);
     let (update_tx, update_rx) = watch::channel(initial_update);
 
-    let (event_tx, event_rx) = watch::channel(alacritty_terminal::event::Event::Wakeup);
+    let (event_tx, event_rx) = watch::channel(AlacTermEvent::Wakeup);
+
+    // 创建 alacritty Terminal 实例
+    let config = Config::default();
+    let dimensions = TermDimensions { rows, cols };
+    let event_listener = ChannelEventListener::new(event_tx.clone());
+    let term = Arc::new(FairMutex::new(AlacrittyTerm::new(
+      config,
+      &dimensions,
+      event_listener,
+    )));
+    let term_clone = term.clone();
 
     // 使用 background_spawn 启动后台任务
     executor
       .spawn(async move {
-        let _ = run_terminal_worker(rows, cols, command_rx, update_tx, event_tx).await;
+        let _ = run_terminal_worker(rows, cols, command_rx, update_tx, event_tx, term_clone).await;
       })
       .detach();
 
-    (command_tx, update_rx, event_rx)
+    (command_tx, update_rx, event_rx, term)
+  }
+
+  /// 创建新的 TerminalProvider 实例（包含 Terminal）
+  pub fn new(executor: &BackgroundExecutor, rows: usize, cols: usize) -> Self {
+    let (command_tx, update_rx, event_rx, term) = Self::setup(executor, rows, cols);
+    let terminal = Terminal::new(term, command_tx.clone());
+
+    Self {
+      command_tx,
+      update_rx,
+      event_rx,
+      terminal: Some(terminal),
+    }
   }
 
   /// 发送按键输入（异步）
@@ -294,6 +404,18 @@ impl TerminalProvider {
     self.update_rx.borrow().clone()
   }
 
+  /// 获取当前内容（从 Terminal 的 last_content）
+  pub fn last_content(&self) -> Option<&TerminalContent> {
+    self.terminal.as_ref().map(|t| &t.last_content)
+  }
+
+  /// 同步终端状态（更新 last_content）
+  pub fn sync(&mut self) {
+    if let Some(ref mut terminal) = self.terminal {
+      terminal.sync();
+    }
+  }
+
   /// 等待更新变化（异步）
   pub async fn wait_for_update(&mut self) -> Result<TerminalUpdate> {
     self.update_rx.changed().await?;
@@ -301,12 +423,12 @@ impl TerminalProvider {
   }
 
   /// 获取当前事件（非阻塞，直接获取最新值）
-  pub fn get_event(&self) -> alacritty_terminal::event::Event {
+  pub fn get_event(&self) -> AlacTermEvent {
     self.event_rx.borrow().clone()
   }
 
   /// 等待事件变化（异步）
-  pub async fn wait_for_event(&mut self) -> Result<alacritty_terminal::event::Event> {
+  pub async fn wait_for_event(&mut self) -> Result<AlacTermEvent> {
     self.event_rx.changed().await?;
     Ok(self.event_rx.borrow().clone())
   }
@@ -318,7 +440,8 @@ async fn run_terminal_worker(
   cols: usize,
   mut command_rx: mpsc::Receiver<ProviderCommand>,
   update_tx: watch::Sender<TerminalUpdate>,
-  event_tx: watch::Sender<alacritty_terminal::event::Event>,
+  event_tx: watch::Sender<AlacTermEvent>,
+  term: Arc<FairMutex<AlacrittyTerm<ChannelEventListener>>>,
 ) -> Result<ExitStatus> {
   let pty_system = NativePtySystem::default();
   let pair = pty_system
@@ -349,12 +472,8 @@ async fn run_terminal_worker(
     .take_writer()
     .context("Failed to take writer:")?;
 
-  // 创建 alacritty Terminal
-  let config = Config::default();
-  let dimensions = TermDimensions { rows, cols };
-  let event_listener = ChannelEventListener::new(event_tx);
-  let mut term: AlacrittyTerm<ChannelEventListener> =
-    AlacrittyTerm::new(config, &dimensions, event_listener);
+  // Clone the Arc for the thread
+  let term_for_thread = term.clone();
 
   let handle = thread::spawn(move || -> Result<ExitStatus> {
     let mut parser: Processor = Processor::new();
@@ -366,8 +485,6 @@ async fn run_terminal_worker(
       match reader.read(&mut buf).context("Error reading PTY")? {
         0 => {
           let start = Instant::now();
-
-          // command_tx.blocking_send(ProviderCommand::Stop)?;
 
           loop {
             match child.try_wait()? {
@@ -386,21 +503,44 @@ async fn run_terminal_worker(
         }
         n => {
           // 将数据写入 Terminal
-          parser.advance(&mut term, &buf[..n]);
+          {
+            let mut term = term_for_thread.lock();
+            parser.advance(&mut *term, &buf[..n]);
 
-          // 发送更新给 UI
-          let rows = term.screen_lines();
-          let cols = term.columns();
-          let content = term.renderable_content();
-          let static_content = convert_content_to_static(content, rows, cols);
-          let update = TerminalUpdate {
-            content: static_content,
-            rows,
-            cols,
-          };
+            // 发送更新给 UI
+            let rows = term.screen_lines();
+            let cols = term.columns();
+            let content = term.renderable_content();
 
-          // 发送更新（watch channel 只保留最新值）
-          let _ = update_tx.send(update);
+            // 转换为 TerminalContent
+            let estimated_size = content.display_iter.size_hint().0;
+            let mut cells = Vec::with_capacity(estimated_size);
+            cells.extend(content.display_iter.map(|ic| IndexedCell {
+              point: ic.point,
+              cell: ic.cell.clone(),
+            }));
+
+            let terminal_content = TerminalContent {
+              cells,
+              mode: content.mode,
+              display_offset: content.display_offset,
+              selection: content.selection,
+              cursor: content.cursor,
+              cursor_char: term.grid()[content.cursor.point].c,
+              terminal_bounds: TerminalBounds::default(),
+              scrolled_to_top: content.display_offset == term.history_size(),
+              scrolled_to_bottom: content.display_offset == 0,
+            };
+
+            let update = TerminalUpdate::new(terminal_content, rows, cols);
+
+            // 发送更新（watch channel 只保留最新值）
+            drop(term);
+            let _ = update_tx.send(update);
+          }
+
+          // 发送 Wakeup 事件
+          let _ = event_tx.send(AlacTermEvent::Wakeup);
         }
       }
     }
@@ -426,6 +566,11 @@ async fn run_terminal_worker(
           pixel_width: 0,
           pixel_height: 0,
         });
+
+        // 更新终端大小
+        let mut term = term.lock();
+        let dimensions = TermDimensions { rows, cols };
+        term.resize(dimensions);
       }
       ProviderCommand::Stop => {
         // kill
