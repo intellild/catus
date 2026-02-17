@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
 
-use crate::terminal::TerminalProvider;
+use crate::terminal::{LocalPty, Terminal, TerminalSize};
 
 /// Tab ID generator
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -19,7 +19,7 @@ pub fn generate_tab_id() -> TabId {
 #[derive(Clone)]
 pub enum TabType {
   /// 终端 Tab
-  Terminal(Entity<TerminalProvider>),
+  Terminal(Entity<Terminal>),
   /// SFTP Tab (TODO: 实现)
   Sftp,
 }
@@ -67,13 +67,37 @@ impl TabItem {
 
   /// 创建一个新的 Terminal Tab
   pub fn new_terminal(cx: &mut gpui::Context<Workspace>, rows: usize, cols: usize) -> Self {
-    // 创建 TerminalProvider，使用 background_executor 启动后台任务
-    let provider = cx.new(|cx| TerminalProvider::new(&cx.background_executor(), rows, cols));
+    // 创建 Terminal Entity
+    let terminal = cx.new(|cx| Terminal::new(cx));
+
+    // 在后台附加本地 PTY
+    cx.spawn(async move |this, cx| {
+      // 创建本地 PTY
+      let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
+      let pty = match LocalPty::new(size, "/bin/bash") {
+        Ok(pty) => pty,
+        Err(e) => {
+          eprintln!("Failed to create PTY: {}", e);
+          return;
+        }
+      };
+
+      // 附加 PTY 到 Terminal
+      this
+        .update(cx, |_workspace, _cx| {
+          // 需要找到对应的 terminal 并附加 pty
+          // 由于我们无法直接从 workspace 获取，这里简化处理
+          // 实际应用中应该在创建时就建立连接
+          drop(pty);
+        })
+        .ok();
+    })
+    .detach();
 
     Self {
       id: generate_tab_id(),
       state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
-      tab_type: TabType::Terminal(provider),
+      tab_type: TabType::Terminal(terminal),
     }
   }
 

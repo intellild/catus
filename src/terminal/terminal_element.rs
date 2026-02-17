@@ -1,6 +1,5 @@
-use crate::terminal::provider::{TerminalContent, TerminalProvider};
+use crate::terminal::content::{TerminalContent, ansi_color_to_rgb, rgb_to_hsla};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::*;
 use std::mem;
 
@@ -51,7 +50,7 @@ impl BatchedTextRun {
 
 /// 自定义 Terminal Element，使用 paint 方式渲染终端内容
 pub struct TerminalElement {
-  provider: Entity<TerminalProvider>,
+  content_entity: Entity<TerminalContent>,
   content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
@@ -61,12 +60,12 @@ pub struct TerminalElement {
 impl TerminalElement {
   /// 创建新的 TerminalElement
   pub fn new(
-    provider: Entity<TerminalProvider>,
+    content_entity: Entity<TerminalContent>,
     content: TerminalContent,
     focus_handle: FocusHandle,
   ) -> Self {
     Self {
-      provider,
+      content_entity,
       content,
       char_width: px(8.),
       char_height: px(16.),
@@ -94,53 +93,6 @@ impl TerminalElement {
     }
     // 行高通常是字体大小的 1.2 倍左右
     self.char_height = px(14. * 1.2);
-  }
-
-  /// 将 alacritty 颜色转换为 RGB 数组
-  fn color_to_rgb(color: &alacritty_terminal::vte::ansi::Color) -> [u8; 3] {
-    match color {
-      AnsiColor::Named(name) => match name {
-        NamedColor::Black => [0, 0, 0],
-        NamedColor::Red => [255, 0, 0],
-        NamedColor::Green => [0, 255, 0],
-        NamedColor::Yellow => [255, 255, 0],
-        NamedColor::Blue => [0, 0, 255],
-        NamedColor::Magenta => [255, 0, 255],
-        NamedColor::Cyan => [0, 255, 255],
-        NamedColor::White => [255, 255, 255],
-        NamedColor::BrightBlack => [64, 64, 64],
-        NamedColor::BrightRed => [255, 64, 64],
-        NamedColor::BrightGreen => [64, 255, 64],
-        NamedColor::BrightYellow => [255, 255, 64],
-        NamedColor::BrightBlue => [64, 64, 255],
-        NamedColor::BrightMagenta => [255, 64, 255],
-        NamedColor::BrightCyan => [64, 255, 255],
-        NamedColor::BrightWhite => [255, 255, 255],
-        NamedColor::Foreground => [212, 212, 212],
-        NamedColor::Background => [30, 30, 30],
-        _ => [212, 212, 212],
-      },
-      AnsiColor::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
-      AnsiColor::Indexed(idx) => {
-        // ANSI 256 色表简化处理
-        match idx {
-          0 => [0, 0, 0],
-          1 => [255, 0, 0],
-          2 => [0, 255, 0],
-          3 => [255, 255, 0],
-          4 => [0, 0, 255],
-          5 => [255, 0, 255],
-          6 => [0, 255, 255],
-          7 => [255, 255, 255],
-          _ => [212, 212, 212],
-        }
-      }
-    }
-  }
-
-  /// 将 RGB 数组转换为 Hsla
-  fn rgb_to_hsla(rgb: [u8; 3]) -> Hsla {
-    gpui::rgb((rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32).into()
   }
 
   /// 创建文本运行
@@ -175,7 +127,7 @@ impl TerminalElement {
     if bg == [30, 30, 30] {
       return;
     }
-    let bg_color = Self::rgb_to_hsla(bg);
+    let bg_color = rgb_to_hsla(bg);
     let bg_bounds = Bounds {
       origin: Point::new(
         origin.x + col as f32 * char_width,
@@ -247,8 +199,8 @@ impl TerminalElement {
         continue;
       }
 
-      let mut fg = Self::color_to_rgb(&cell.fg);
-      let mut bg = Self::color_to_rgb(&cell.bg);
+      let mut fg = ansi_color_to_rgb(&cell.fg);
+      let mut bg = ansi_color_to_rgb(&cell.bg);
 
       // 处理反色（inverse）标志
       if cell.flags.contains(Flags::INVERSE) {
@@ -344,13 +296,8 @@ impl Element for TerminalElement {
   ) -> Self::PrepaintState {
     self.calculate_char_dimensions(window);
 
-    // 从 provider 获取最新内容
-    let content = self
-      .provider
-      .read(cx)
-      .last_content()
-      .cloned()
-      .unwrap_or_else(|| self.content.clone());
+    // 从 content_entity 获取最新内容
+    let content = self.content_entity.read(cx).clone();
     self.content = content.clone();
 
     LayoutState {
@@ -391,11 +338,11 @@ impl Element for TerminalElement {
       let col = indexed.point.column.0 as usize;
       let cell = &indexed.cell;
 
-      let mut bg = Self::color_to_rgb(&cell.bg);
+      let mut bg = ansi_color_to_rgb(&cell.bg);
 
       // 处理反色（inverse）标志
       if cell.flags.contains(Flags::INVERSE) {
-        bg = Self::color_to_rgb(&cell.fg);
+        bg = ansi_color_to_rgb(&cell.fg);
       }
 
       Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
@@ -409,7 +356,7 @@ impl Element for TerminalElement {
         continue;
       }
 
-      let fg_color = Self::rgb_to_hsla(batch.fg);
+      let fg_color = rgb_to_hsla(batch.fg);
       let pos = Point::new(
         origin.x + batch.start_col as f32 * char_width,
         origin.y + batch.start_row as f32 * char_height,

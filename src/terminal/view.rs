@@ -1,36 +1,57 @@
-use crate::terminal::provider::{TerminalContent, TerminalProvider};
+use crate::terminal::content::{TerminalContent, TerminalEvent};
+use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use std::time::Duration;
 
-/// Terminal view component using GPUI (类似 Zed 的 TerminalView)
+/// Terminal view component using GPUI
 pub struct TerminalView {
-  provider: Entity<TerminalProvider>,
+  terminal: Entity<Terminal>,
   focus_handle: FocusHandle,
+  _content_observer: Subscription,
   last_content: TerminalContent,
 }
 
 impl TerminalView {
-  /// 创建新的 TerminalView，使用已存在的 TerminalProvider
-  pub fn new(provider: Entity<TerminalProvider>, cx: &mut Context<Self>) -> Self {
-    // 获取初始内容
-    let initial_content = provider
-      .read(cx)
-      .last_content()
-      .cloned()
-      .unwrap_or_default();
+  /// 创建新的 TerminalView，使用已存在的 Terminal Entity
+  pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
+    // 获取内容实体
+    let content_entity = terminal.read(cx).content.clone();
 
-    // 启动后台任务定期同步终端状态
-    // 这是简化版的 Zed 模式，使用定期 sync 而不是事件驱动
+    // 获取初始内容
+    let initial_content = terminal.read(cx).current_content();
+
+    // 观察 TerminalContent 变化
+    let content_observer = cx.observe(&content_entity, |this, _content, cx| {
+      // 内容变化时更新本地缓存并重绘
+      this.sync(cx);
+      cx.notify();
+    });
+
+    // 订阅 Terminal 事件
+    let _event_subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
+      match event {
+        TerminalEvent::Wakeup => {
+          this.sync(cx);
+          cx.notify();
+        }
+        TerminalEvent::TitleChanged(_) => {
+          cx.notify();
+        }
+        TerminalEvent::Closed => {
+          // 终端关闭处理
+        }
+      }
+    });
+
+    // 启动定期同步任务
     cx.spawn(async move |this, cx| {
       loop {
-        // 每 16ms (约 60fps) 同步一次
         cx.background_executor()
           .timer(Duration::from_millis(16))
           .await;
 
-        // 尝试更新视图
-        let result = this.update(cx, |this, cx| {
+        let result = this.update(&mut *cx, |this, cx| {
           this.sync(cx);
           cx.notify();
         });
@@ -45,8 +66,9 @@ impl TerminalView {
     .detach();
 
     Self {
-      provider,
+      terminal,
       focus_handle: cx.focus_handle(),
+      _content_observer: content_observer,
       last_content: initial_content,
     }
   }
@@ -60,38 +82,39 @@ impl TerminalView {
   ) {
     let keystroke = event.keystroke.clone();
 
-    self.provider.update(cx, |provider, _| {
+    self.terminal.update(cx, |terminal, _| {
       let data = encode_keystroke(&keystroke);
-      provider.input(data);
+      terminal.input(data);
     });
 
     cx.notify();
   }
 
-  /// 同步终端状态（类似 Zed 的 sync 方法）
+  /// 同步终端状态
   pub fn sync(&mut self, cx: &mut Context<Self>) {
-    self.provider.update(cx, |provider, _| {
-      provider.sync();
+    self.terminal.update(cx, |terminal, _| {
+      terminal.sync();
     });
 
     // 更新本地缓存
-    if let Some(content) = self.provider.read(cx).last_content() {
-      self.last_content = content.clone();
-    }
+    let content = self.terminal.read(cx).current_content();
+    self.last_content = content;
+  }
+
+  /// 获取关联的 Terminal Entity
+  pub fn terminal(&self) -> &Entity<Terminal> {
+    &self.terminal
   }
 }
 
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // 获取当前内容（优先使用本地缓存）
-    let content = self
-      .provider
-      .read(cx)
-      .last_content()
-      .cloned()
-      .unwrap_or_else(|| self.last_content.clone());
-
+    // 获取当前内容
+    let content = self.terminal.read(cx).current_content();
     self.last_content = content.clone();
+
+    // 获取内容实体
+    let content_entity = self.terminal.read(cx).content.clone();
 
     div()
       .id("terminal-view")
@@ -99,7 +122,7 @@ impl Render for TerminalView {
       .bg(gpui::rgb(0x1e1e1e))
       .cursor_text()
       .child(TerminalElement::new(
-        self.provider.clone(),
+        content_entity,
         content,
         self.focus_handle.clone(),
       ))

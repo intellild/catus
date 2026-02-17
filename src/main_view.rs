@@ -142,9 +142,9 @@ impl MainView {
 
     if let Some(tab) = active_tab {
       match &tab.tab_type {
-        TabType::Terminal(provider) => {
-          // 创建 TerminalView 来显示终端，使用 Tab 关联的 Provider
-          let terminal_view = cx.new(|cx| TerminalView::new(provider.clone(), cx));
+        TabType::Terminal(terminal) => {
+          // 创建 TerminalView 来显示终端，使用 Tab 关联的 Terminal Entity
+          let terminal_view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
 
           div()
             .flex_1()
