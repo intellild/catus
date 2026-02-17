@@ -1,9 +1,8 @@
 use gpui::*;
 use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
 
-use crate::app_state::{AppState, TabType};
 use crate::terminal::TerminalView;
-use crate::workspace::Workspace;
+use crate::workspace::{TabType, Workspace};
 
 /// Main view
 pub struct MainView {
@@ -15,32 +14,25 @@ impl MainView {
     Self { workspace }
   }
 
-  fn app_state(&self, cx: &App) -> Entity<AppState> {
-    self.workspace.read(cx).state.clone()
-  }
-
   fn handle_tab_click(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    let app_state = self.app_state(cx);
-    if let Some(tab) = app_state.read(cx).tabs.get(index) {
+    if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
       let id = tab.id;
-      if app_state.update(cx, |state, _cx| state.activate_tab(id)) {
+      if self.workspace.update(cx, |workspace, _cx| workspace.activate_tab(id)) {
         cx.notify();
       }
     }
   }
 
   fn handle_tab_close(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    let app_state = self.app_state(cx);
-    if let Some(tab) = app_state.read(cx).tabs.get(index) {
+    if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
       let id = tab.id;
-      if app_state.update(cx, |state, _cx| state.close_tab(id)) {
+      if self.workspace.update(cx, |workspace, _cx| workspace.close_tab(id)) {
         cx.notify();
       }
     }
   }
 
   fn handle_add_terminal(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-    // 在当前 workspace 中添加新的 Terminal Tab
     self.workspace.update(cx, |workspace, cx| {
       workspace.add_terminal_tab(cx);
       cx.notify();
@@ -56,9 +48,9 @@ impl MainView {
     #[cfg(not(target_os = "macos"))]
     let left_padding = px(12.);
 
-    let app_state = self.app_state(cx);
-    let tabs = app_state.read(cx).tabs.clone();
-    let active_index = app_state.read(cx).active_index().unwrap_or(0);
+    let workspace = self.workspace.read(cx);
+    let tabs = workspace.tabs.clone();
+    let active_index = workspace.active_index().unwrap_or(0);
 
     div()
       .id("custom-title-bar")
@@ -140,14 +132,13 @@ impl MainView {
   }
 
   fn render_active_tab_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let app_state = self.app_state(cx);
-    let active_tab = app_state.read(cx).active_tab().cloned();
+    let active_tab = self.workspace.read(cx).active_tab().cloned();
 
     if let Some(tab) = active_tab {
       match &tab.tab_type {
-        TabType::Terminal(_provider) => {
-          // 创建 TerminalView 来显示终端
-          let terminal_view = cx.new(|cx| TerminalView::new(cx));
+        TabType::Terminal(provider) => {
+          // 创建 TerminalView 来显示终端，使用 Tab 关联的 Provider
+          let terminal_view = cx.new(|cx| TerminalView::new(provider.clone(), cx));
           
           div()
             .flex_1()

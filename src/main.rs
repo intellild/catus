@@ -1,7 +1,6 @@
 use gpui::*;
 use gpui_component::Root;
 
-mod app_state;
 mod main_view;
 mod terminal;
 mod workspace;

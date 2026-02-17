@@ -11,11 +11,10 @@ Catus 是一个基于 Rust 和 GPUI 框架构建的终端与 SFTP 客户端应�
 ```
 App (应用根)
   └── Workspace (工作区，可扩展为多个)
-        └── AppState (应用状态，管理所有 Tab)
-              └── TabItem[] (Tab 集合)
-                    ├── TabType::Terminal
-                    │       └── TerminalProvider (终端实现)
-                    └── TabType::SFTP (预留)
+        └── TabItem[] (Tab 集合)
+            ├── TabType::Terminal
+            │       └── TerminalProvider (终端实现)
+            └── TabType::SFTP (预留)
 ```
 
 ### 模块职责
@@ -30,7 +29,24 @@ App (应用根)
 
 ```rust
 pub struct Workspace {
-    pub state: Entity<AppState>,  // 管理所有 Tab
+    pub tabs: Vec<TabItem>,           // 直接管理所有 Tab
+    pub active_tab_id: Option<TabId>, // 当前激活的 Tab
+}
+
+pub struct TabItem {
+    pub id: TabId,
+    pub state: Entity<TabState>,      // 标题、图标等状态
+    pub tab_type: TabType,            // Tab 类型（Terminal/SFTP）
+}
+
+pub struct TabState {
+    pub title: SharedString,
+    pub icon: IconName,
+}
+
+pub enum TabType {
+    Terminal(Entity<TerminalProvider>),
+    Sftp,  // TODO: 待实现
 }
 
 pub struct App {
@@ -38,36 +54,19 @@ pub struct App {
 }
 ```
 
-- 管理 Workspace 生命周期
+- 直接管理 Workspace 中的 tabs
 - 提供添加/关闭/激活 Tab 的接口
+- 生成唯一 Tab ID
 - 支持多 Workspace（当前简化实现）
 
-#### 3. `app_state.rs` - Tab 状态管理
-
-```rust
-pub struct AppState {
-    pub tabs: Vec<TabItem>,
-    pub active_tab_id: Option<TabId>,
-}
-
-pub enum TabType {
-    Terminal(Entity<TerminalProvider>),
-    Sftp,  // TODO: 待实现
-}
-```
-
-- 管理所有 Tab 的状态
-- 生成唯一 Tab ID
-- TabItem 包含类型、标题、图标等信息
-
-#### 4. `main_view.rs` - 主界面视图
+#### 3. `main_view.rs` - 主界面视图
 
 - 渲染自定义标题栏（Tab 栏）
 - 处理 Tab 点击、关闭、新建事件
 - 根据激活 Tab 类型渲染对应内容
 - 集成 TerminalView 显示终端
 
-#### 5. `terminal/` - 终端模块
+#### 4. `terminal/` - 终端模块
 
 ##### `provider.rs` - 终端后端
 

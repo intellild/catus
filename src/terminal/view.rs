@@ -11,25 +11,13 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-  /// 创建新的 TerminalView
-  pub fn new(cx: &mut Context<Self>) -> Self {
-    // 默认终端尺寸
-    let rows = 24;
-    let cols = 80;
-
-    // 创建 TerminalProvider 实体
-    let (command_tx, update_rx, event_rx) = TerminalProvider::setup(rows, cols);
-    let provider = cx.new(|_cx| TerminalProvider {
-      command_tx,
-      update_rx,
-      event_rx,
-    });
-
+  /// 创建新的 TerminalView，使用已存在的 TerminalProvider
+  pub fn new(provider: Entity<TerminalProvider>, cx: &mut Context<Self>) -> Self {
     // 获取初始内容
     let content = provider.read(cx).get_update().content.clone();
 
     // 设置定期刷新以获取终端更新
-    cx.spawn(async move |this, mut cx| {
+    cx.spawn(async move |this, cx| {
       loop {
         // 每 50ms 刷新一次
         cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
