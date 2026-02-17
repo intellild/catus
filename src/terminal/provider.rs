@@ -5,7 +5,7 @@ use alacritty_terminal::{
   vte::ansi::Processor,
 };
 use anyhow::{Context as AnyhowContext, Result};
-
+use gpui::BackgroundExecutor;
 use portable_pty::{CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
 use std::time::{Duration, Instant};
 use std::{io::Read, thread};
@@ -214,8 +214,9 @@ pub struct TerminalProvider {
 
 impl TerminalProvider {
   /// 创建新的 TerminalProvider 所需的数据和任务
-  /// 返回 (command_tx, update_rx, event_rx, background_task)
+  /// 返回 (command_tx, update_rx, event_rx)
   pub fn setup(
+    executor: &BackgroundExecutor,
     rows: usize,
     cols: usize,
   ) -> (
@@ -242,13 +243,12 @@ impl TerminalProvider {
 
     let (event_tx, event_rx) = watch::channel(alacritty_terminal::event::Event::Wakeup);
 
-    // 启动后台任务（注意：调用者需要确保在正确的执行器中运行）
-    std::thread::spawn(move || {
-      let runtime = tokio::runtime::Runtime::new().unwrap();
-      runtime.block_on(async {
+    // 使用 background_spawn 启动后台任务
+    executor
+      .spawn(async move {
         let _ = run_terminal_worker(rows, cols, command_rx, update_tx, event_tx).await;
-      });
-    });
+      })
+      .detach();
 
     (command_tx, update_rx, event_rx)
   }

@@ -32,10 +32,7 @@ pub struct TabState {
 }
 
 impl TabState {
-  pub fn new(
-    title: impl Into<SharedString>,
-    icon: IconName,
-  ) -> Self {
+  pub fn new(title: impl Into<SharedString>, icon: IconName) -> Self {
     Self {
       title: title.into(),
       icon,
@@ -69,20 +66,17 @@ impl TabItem {
   }
 
   /// 创建一个新的 Terminal Tab
-  pub fn new_terminal(
-    cx: &mut gpui::Context<Workspace>,
-    rows: usize,
-    cols: usize,
-  ) -> Self {
-    // 创建 TerminalProvider
-    let (command_tx, update_rx, event_rx) = TerminalProvider::setup(rows, cols);
-    
+  pub fn new_terminal(cx: &mut gpui::Context<Workspace>, rows: usize, cols: usize) -> Self {
+    // 创建 TerminalProvider，使用 background_executor 启动后台任务
+    let (command_tx, update_rx, event_rx) =
+      TerminalProvider::setup(&cx.background_executor(), rows, cols);
+
     let provider = cx.new(|_cx| TerminalProvider {
       command_tx,
       update_rx,
       event_rx,
     });
-    
+
     Self {
       id: generate_tab_id(),
       state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
@@ -113,8 +107,9 @@ impl Workspace {
   /// 如果没有 Tab，会自动创建一个默认的 Terminal Tab
   pub fn new(cx: &mut gpui::Context<Self>) -> Self {
     // 创建一个默认的 Terminal Tab
-    let tabs = vec![TabItem::new_terminal(cx, 24, 80)];
-    let active_tab_id = Some(tabs[0].id);
+    let tab = TabItem::new_terminal(cx, 24, 80);
+    let active_tab_id = Some(tab.id);
+    let tabs = vec![tab];
 
     Self {
       tabs,
@@ -180,5 +175,3 @@ impl Workspace {
     self.add_tab(tab)
   }
 }
-
-

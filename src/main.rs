@@ -6,8 +6,8 @@ mod main_view;
 mod terminal;
 mod workspace;
 
-use main_view::MainView;
 use app::App as CatusApp;
+use main_view::MainView;
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
@@ -35,6 +35,7 @@ fn main() {
         let view = cx.new(|_| MainView::new(workspace));
         cx.new(|cx| Root::new(view, window, cx))
       },
-    ).ok();
+    )
+    .ok();
   });
 }

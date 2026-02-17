@@ -17,7 +17,10 @@ impl MainView {
   fn handle_tab_click(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
     if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
       let id = tab.id;
-      if self.workspace.update(cx, |workspace, _cx| workspace.activate_tab(id)) {
+      if self
+        .workspace
+        .update(cx, |workspace, _cx| workspace.activate_tab(id))
+      {
         cx.notify();
       }
     }
@@ -26,7 +29,10 @@ impl MainView {
   fn handle_tab_close(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
     if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
       let id = tab.id;
-      if self.workspace.update(cx, |workspace, _cx| workspace.close_tab(id)) {
+      if self
+        .workspace
+        .update(cx, |workspace, _cx| workspace.close_tab(id))
+      {
         cx.notify();
       }
     }
@@ -139,7 +145,7 @@ impl MainView {
         TabType::Terminal(provider) => {
           // 创建 TerminalView 来显示终端，使用 Tab 关联的 Provider
           let terminal_view = cx.new(|cx| TerminalView::new(provider.clone(), cx));
-          
+
           div()
             .flex_1()
             .size_full()

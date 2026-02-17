@@ -20,8 +20,10 @@ impl TerminalView {
     cx.spawn(async move |this, cx| {
       loop {
         // 每 50ms 刷新一次
-        cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-        
+        cx.background_executor()
+          .timer(std::time::Duration::from_millis(50))
+          .await;
+
         // 更新实体
         if let Some(this) = this.upgrade() {
           let result: Result<()> = cx.update_entity(
@@ -40,7 +42,8 @@ impl TerminalView {
           break;
         }
       }
-    }).detach();
+    })
+    .detach();
 
     Self {
       provider,
