@@ -44,3 +44,5 @@ Catus 是一个基于 Rust 和 GPUI 框架构建的终端与 SFTP 客户端应�
 ### Zed 编辑器
 
 项目根目录下的 `zed` 目录包含 Zed 编辑器的源代码。在实现 terminal 和 SSH 相关功能时，应参考 Zed 编辑器的实现方式，借鉴其设计思路和代码组织方式。
+
+详见 skill: `zed-terminal`
