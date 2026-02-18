@@ -10,6 +10,7 @@ use alacritty_terminal::{
   vte::ansi::Processor,
 };
 use gpui::*;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
 /// 终端尺寸结构，用于 alacritty 的 Dimensions trait
@@ -51,6 +52,9 @@ pub struct Terminal {
 
   /// 从后台任务接收内容更新
   _content_rx: watch::Receiver<TerminalContent>,
+
+  /// PTY writer，用于写入用户输入
+  pty_writer: Arc<Mutex<Option<Box<dyn Pty>>>>,
 
   /// 后台任务句柄（Drop 时自动取消）
   _task: Task<()>,
@@ -113,6 +117,7 @@ impl Terminal {
       content,
       input_tx,
       _content_rx: content_rx,
+      pty_writer: Arc::new(Mutex::new(None)),
       _task: background_task,
       _ui_task: ui_update_task,
     })
@@ -120,38 +125,44 @@ impl Terminal {
 
   /// 附加 PTY（本地或 SSH）
   /// 注意：这个方法需要在创建 Terminal 后调用，并传入 PTY
-  pub fn attach_pty(&mut self, pty: Box<dyn Pty>, cx: &mut Context<Self>) {
-    // 启动 PTY 读取器
-    let reader = pty.start_reader();
+  pub fn attach_pty(&mut self, mut pty: Box<dyn Pty>, cx: &mut App) {
+    // 获取 PTY reader
+    let pty_reader = pty.start_reader();
+
+    // 存储 PTY writer
+    {
+      let mut writer = self.pty_writer.lock().unwrap();
+      *writer = Some(pty);
+    }
+
     let input_tx = self.input_tx.clone();
 
-    // 在后台任务中转发 PTY 数据
-    let forward_task = cx.background_spawn(async move {
-      let mut reader = reader;
+    // 在后台任务中读取 PTY 输出并转发到终端
+    cx.background_spawn(async move {
+      let mut reader = pty_reader;
       while let Some(data) = reader.recv().await {
         if input_tx.send(TerminalInput::PtyData(data)).await.is_err() {
           break;
         }
       }
-    });
-
-    // 我们需要存储 PTY 以便后续写入，但 Pty trait 不是 Sync
-    // 这里我们启动一个任务来处理 Write 命令
-    let input_tx_for_write = self.input_tx.clone();
-    let _write_task = cx.background_spawn(async move {
-      // 注意：这里简化处理，实际应该在后台循环中处理 Write
-      // 目前 Write 命令会被接收但不会被处理
-      drop(input_tx_for_write);
-    });
-
-    // 为了保持 PTY 存活，我们需要存储它
-    // 但由于 trait object 的限制，这里简化处理
-    drop(forward_task);
+    })
+    .detach();
   }
 
-  /// 写入输入数据
+  /// 获取 PTY writer 用于写入数据
+  fn write_to_pty(&self, data: &[u8]) {
+    let writer = self.pty_writer.lock().unwrap();
+    if let Some(pty) = writer.as_ref() {
+      if let Err(e) = pty.write(data) {
+        eprintln!("Failed to write to PTY: {}", e);
+      }
+    }
+  }
+
+  /// 写入输入数据（用户按键）
   pub fn input(&self, data: Vec<u8>) {
-    let _ = self.input_tx.try_send(TerminalInput::Write(data));
+    // 直接写入 PTY，无需通过 channel
+    self.write_to_pty(&data);
   }
 
   /// 调整终端大小

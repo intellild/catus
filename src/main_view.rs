@@ -1,5 +1,7 @@
 use gpui::*;
-use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
+use gpui_component::notification::Notification;
+use gpui_component::WindowExt;
+use gpui_component::{tab::*, ActiveTheme as _, Icon, IconName, StyledExt as _, *};
 
 use crate::terminal::TerminalView;
 use crate::workspace::{TabType, Workspace};
@@ -38,11 +40,16 @@ impl MainView {
     }
   }
 
-  fn handle_add_terminal(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-    self.workspace.update(cx, |workspace, cx| {
-      workspace.add_terminal_tab(cx);
+  fn handle_add_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if let Err(error_msg) = self
+      .workspace
+      .update(cx, |workspace, cx| workspace.add_terminal_tab(cx))
+    {
+      // 显示错误通知
+      window.push_notification(Notification::error(error_msg), cx);
+    } else {
       cx.notify();
-    });
+    }
   }
 
   fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

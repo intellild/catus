@@ -41,7 +41,8 @@ pub trait Pty: Send {
 
   /// 启动读取循环，返回数据接收器
   /// 在内部创建独立线程进行阻塞读取
-  fn start_reader(self: Box<Self>) -> mpsc::Receiver<Vec<u8>>;
+  /// 注意：此方法只能调用一次
+  fn start_reader(&mut self) -> mpsc::Receiver<Vec<u8>>;
 
   /// 关闭 PTY
   fn close(&self) -> anyhow::Result<()>;

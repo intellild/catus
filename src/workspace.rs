@@ -67,39 +67,34 @@ impl TabItem {
   }
 
   /// 创建一个新的 Terminal Tab
-  pub fn new_terminal(cx: &mut gpui::Context<Workspace>, rows: usize, cols: usize) -> Self {
-    // 创建 Terminal Entity - 在同步上下文中创建
-    let terminal = Arc::new(Terminal::new(cx).expect("Failed to create terminal"));
+  ///
+  /// # Returns
+  /// * `Ok(Self)` - 成功创建 Tab
+  /// * `Err(String)` - 创建失败，返回错误信息
+  pub fn new_terminal(
+    cx: &mut gpui::Context<Workspace>,
+    rows: usize,
+    cols: usize,
+  ) -> Result<Self, String> {
+    // 创建 Terminal - 先不加 Arc
+    let mut terminal =
+      Terminal::new(cx).map_err(|e| format!("Failed to create terminal: {}", e))?;
 
-    // 在后台附加本地 PTY
-    cx.spawn(async move |this, cx| {
-      // 创建本地 PTY
-      let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
-      let pty = match LocalPty::new(size, "/bin/bash") {
-        Ok(pty) => pty,
-        Err(e) => {
-          eprintln!("Failed to create PTY: {}", e);
-          return;
-        }
-      };
+    // 创建本地 PTY
+    let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
+    let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
 
-      // 附加 PTY 到 Terminal
-      this
-        .update(cx, |_workspace, _cx| {
-          // 需要找到对应的 terminal 并附加 pty
-          // 由于我们无法直接从 workspace 获取，这里简化处理
-          // 实际应用中应该在创建时就建立连接
-          drop(pty);
-        })
-        .ok();
-    })
-    .detach();
+    // 将 PTY 附加到 Terminal
+    terminal.attach_pty(Box::new(pty), cx);
 
-    Self {
+    // 现在包装成 Arc
+    let terminal_arc = Arc::new(terminal);
+
+    Ok(Self {
       id: generate_tab_id(),
       state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
-      tab_type: TabType::Terminal(terminal),
-    }
+      tab_type: TabType::Terminal(terminal_arc),
+    })
   }
 
   /// 创建一个新的 SFTP Tab
@@ -125,9 +120,15 @@ impl Workspace {
   /// 如果没有 Tab，会自动创建一个默认的 Terminal Tab
   pub fn new(cx: &mut gpui::Context<Self>) -> Self {
     // 创建一个默认的 Terminal Tab
-    let tab = TabItem::new_terminal(cx, 24, 80);
-    let active_tab_id = Some(tab.id);
-    let tabs = vec![tab];
+    let tabs = match TabItem::new_terminal(cx, 24, 80) {
+      Ok(tab) => vec![tab],
+      Err(e) => {
+        eprintln!("Failed to create default terminal tab: {}", e);
+        // 如果创建终端失败，创建一个空的 Workspace
+        vec![]
+      }
+    };
+    let active_tab_id = tabs.first().map(|tab| tab.id);
 
     Self {
       tabs,
@@ -182,9 +183,13 @@ impl Workspace {
   }
 
   /// 添加一个新的 Terminal Tab
-  pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> TabId {
-    let tab = TabItem::new_terminal(cx, 24, 80);
-    self.add_tab(tab)
+  ///
+  /// # Returns
+  /// * `Ok(TabId)` - 成功创建并添加 Tab
+  /// * `Err(String)` - 创建失败，返回错误信息
+  pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> Result<TabId, String> {
+    let tab = TabItem::new_terminal(cx, 24, 80)?;
+    Ok(self.add_tab(tab))
   }
 
   /// 添加一个新的 SFTP Tab
