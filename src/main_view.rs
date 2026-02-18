@@ -1,7 +1,7 @@
 use gpui::*;
-use gpui_component::notification::Notification;
 use gpui_component::WindowExt;
-use gpui_component::{tab::*, ActiveTheme as _, Icon, IconName, StyledExt as _, *};
+use gpui_component::notification::Notification;
+use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
 
 use crate::terminal::TerminalView;
 use crate::workspace::{TabType, Workspace};

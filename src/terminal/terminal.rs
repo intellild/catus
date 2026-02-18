@@ -10,7 +10,6 @@ use alacritty_terminal::{
   vte::ansi::Processor,
 };
 use gpui::*;
-use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
 /// 终端尺寸结构，用于 alacritty 的 Dimensions trait
@@ -53,9 +52,6 @@ pub struct Terminal {
   /// 从后台任务接收内容更新
   _content_rx: watch::Receiver<TerminalContent>,
 
-  /// PTY writer，用于写入用户输入
-  pty_writer: Arc<Mutex<Option<Box<dyn Pty>>>>,
-
   /// 后台任务句柄（Drop 时自动取消）
   _task: Task<()>,
 
@@ -64,8 +60,8 @@ pub struct Terminal {
 }
 
 impl Terminal {
-  /// 创建新的终端
-  pub fn new(cx: &mut App) -> Result<Self> {
+  /// 创建新的终端，并附加 PTY
+  pub fn new(pty: Box<dyn Pty>, cx: &mut App) -> Result<Self> {
     // 创建 TerminalContent Entity - 在同步上下文中创建，避免 RefCell borrow 冲突
     let content = cx.new(|_cx| TerminalContent::new());
 
@@ -75,14 +71,32 @@ impl Terminal {
     // 创建 watch 通道用于内容同步
     let (content_tx, content_rx) = watch::channel(TerminalContent::new());
 
+    // 获取 PTY reader
+    let pty_reader = pty.start_reader();
+
     // 获取 AsyncApp 用于后台任务
     let async_cx = cx.to_async();
 
-    // 启动后台任务（Term 在循环内部创建）
+    // 启动后台任务（Term 和 Pty 在循环内部创建）
     let background_task = async_cx.background_spawn({
       let content_tx = content_tx.clone();
       async move {
-        run_terminal_loop(input_rx, content_tx).await;
+        run_terminal_loop(input_rx, content_tx, pty).await;
+      }
+    });
+
+    // 启动 PTY 读取任务
+    let input_tx_clone = input_tx.clone();
+    let pty_read_task = async_cx.background_spawn(async move {
+      let mut reader = pty_reader;
+      while let Some(data) = reader.recv().await {
+        if input_tx_clone
+          .send(TerminalInput::PtyData(data))
+          .await
+          .is_err()
+        {
+          break;
+        }
       }
     });
 
@@ -113,56 +127,25 @@ impl Terminal {
       }
     });
 
+    // 合并后台任务
+    let combined_task = async_cx.background_spawn(async move {
+      let _ = background_task.await;
+      let _ = pty_read_task.await;
+    });
+
     Ok(Self {
       content,
       input_tx,
       _content_rx: content_rx,
-      pty_writer: Arc::new(Mutex::new(None)),
-      _task: background_task,
+      _task: combined_task,
       _ui_task: ui_update_task,
     })
   }
 
-  /// 附加 PTY（本地或 SSH）
-  /// 注意：这个方法需要在创建 Terminal 后调用，并传入 PTY
-  pub fn attach_pty(&mut self, mut pty: Box<dyn Pty>, cx: &mut App) {
-    // 获取 PTY reader
-    let pty_reader = pty.start_reader();
-
-    // 存储 PTY writer
-    {
-      let mut writer = self.pty_writer.lock().unwrap();
-      *writer = Some(pty);
-    }
-
-    let input_tx = self.input_tx.clone();
-
-    // 在后台任务中读取 PTY 输出并转发到终端
-    cx.background_spawn(async move {
-      let mut reader = pty_reader;
-      while let Some(data) = reader.recv().await {
-        if input_tx.send(TerminalInput::PtyData(data)).await.is_err() {
-          break;
-        }
-      }
-    })
-    .detach();
-  }
-
-  /// 获取 PTY writer 用于写入数据
-  fn write_to_pty(&self, data: &[u8]) {
-    let writer = self.pty_writer.lock().unwrap();
-    if let Some(pty) = writer.as_ref() {
-      if let Err(e) = pty.write(data) {
-        eprintln!("Failed to write to PTY: {}", e);
-      }
-    }
-  }
-
   /// 写入输入数据（用户按键）
   pub fn input(&self, data: Vec<u8>) {
-    // 直接写入 PTY，无需通过 channel
-    self.write_to_pty(&data);
+    // 发送到后台任务，由后台任务写入 PTY
+    let _ = self.input_tx.try_send(TerminalInput::Write(data));
   }
 
   /// 调整终端大小
@@ -187,6 +170,7 @@ impl EventEmitter<TerminalEvent> for Terminal {}
 async fn run_terminal_loop(
   mut input_rx: mpsc::Receiver<TerminalInput>,
   content_tx: watch::Sender<TerminalContent>,
+  pty: Box<dyn Pty>,
 ) {
   // 在循环内部创建 Term，避免使用 Arc<Mutex<_>>
   let config = Config::default();
@@ -203,16 +187,18 @@ async fn run_terminal_loop(
   // 处理 UI 输入
   while let Some(input) = input_rx.recv().await {
     match input {
+      TerminalInput::Write(data) => {
+        // 写入数据到 PTY
+        if let Err(e) = pty.write(&data) {
+          eprintln!("Failed to write to PTY: {}", e);
+        }
+      }
       TerminalInput::PtyData(data) => {
         // 解析 VTE 数据
         parser.advance(&mut term, &data);
 
         let content = make_content(&term);
         let _ = content_tx.send(content);
-      }
-      TerminalInput::Write(_data) => {
-        // 写入数据到 PTY - 需要在这里处理
-        // 由于 Pty trait 的限制，这里简化处理
       }
       TerminalInput::Resize(size) => {
         // 调整终端大小
@@ -221,6 +207,9 @@ async fn run_terminal_loop(
           screen_lines: size.rows as usize,
         };
         term.resize(dimensions);
+
+        // 同时通知 PTY 调整大小
+        let _ = pty.resize(size);
       }
       TerminalInput::Sync => {
         let content = make_content(&term);

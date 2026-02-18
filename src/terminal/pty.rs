@@ -32,8 +32,8 @@ impl TerminalSize {
 }
 
 /// PTY 抽象
-pub trait Pty: Send {
-  /// 写入数据（线程安全）
+pub trait Pty: Send + Sync {
+  /// 写入数据
   fn write(&self, data: &[u8]) -> anyhow::Result<()>;
 
   /// 调整大小
@@ -42,7 +42,7 @@ pub trait Pty: Send {
   /// 启动读取循环，返回数据接收器
   /// 在内部创建独立线程进行阻塞读取
   /// 注意：此方法只能调用一次
-  fn start_reader(&mut self) -> mpsc::Receiver<Vec<u8>>;
+  fn start_reader(&self) -> mpsc::Receiver<Vec<u8>>;
 
   /// 关闭 PTY
   fn close(&self) -> anyhow::Result<()>;

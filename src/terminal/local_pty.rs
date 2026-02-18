@@ -9,10 +9,10 @@ use tokio::sync::mpsc;
 pub struct LocalPty {
   writer: Arc<Mutex<Box<dyn Write + Send>>>,
   process_id: Option<u32>,
-  _reader_thread: Option<std::thread::JoinHandle<()>>,
-  _child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+  _reader_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+  _child: Arc<Box<dyn Child + Send + Sync>>,
   /// PTY 输出接收器（只能被 take 一次）
-  reader_rx: Option<mpsc::Receiver<Vec<u8>>>,
+  reader_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl LocalPty {
@@ -91,16 +91,12 @@ impl LocalPty {
     // 关闭 slave 端
     drop(pty_pair.slave);
 
-    // 保存子进程和线程 handle
-    let child: Box<dyn Child + Send + Sync> = child;
-    let reader_thread = Some(reader_thread);
-
     let pty = Self {
       writer: Arc::new(Mutex::new(writer)),
       process_id,
-      _reader_thread: reader_thread,
-      _child: Arc::new(Mutex::new(child)),
-      reader_rx: Some(rx),
+      _reader_thread: Arc::new(Mutex::new(Some(reader_thread))),
+      _child: Arc::new(child),
+      reader_rx: Mutex::new(Some(rx)),
     };
 
     Ok(pty)
@@ -123,10 +119,12 @@ impl Pty for LocalPty {
     Ok(())
   }
 
-  fn start_reader(&mut self) -> mpsc::Receiver<Vec<u8>> {
+  fn start_reader(&self) -> mpsc::Receiver<Vec<u8>> {
     // 返回存储的 receiver，只能 take 一次
     self
       .reader_rx
+      .lock()
+      .unwrap()
       .take()
       .expect("start_reader can only be called once")
   }

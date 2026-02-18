@@ -76,18 +76,15 @@ impl TabItem {
     rows: usize,
     cols: usize,
   ) -> Result<Self, String> {
-    // 创建 Terminal - 先不加 Arc
-    let mut terminal =
-      Terminal::new(cx).map_err(|e| format!("Failed to create terminal: {}", e))?;
-
     // 创建本地 PTY
     let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
     let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
 
-    // 将 PTY 附加到 Terminal
-    terminal.attach_pty(Box::new(pty), cx);
+    // 创建 Terminal，直接传入 PTY
+    let terminal =
+      Terminal::new(Box::new(pty), cx).map_err(|e| format!("Failed to create terminal: {}", e))?;
 
-    // 现在包装成 Arc
+    // 包装成 Arc
     let terminal_arc = Arc::new(terminal);
 
     Ok(Self {

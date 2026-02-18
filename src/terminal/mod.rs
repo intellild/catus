@@ -9,7 +9,7 @@ pub mod view;
 // 重导出主要类型
 pub use content::TerminalContent;
 pub use local_pty::LocalPty;
-pub use pty::TerminalSize;
+pub use pty::{Pty, TerminalSize};
 pub use terminal::Terminal;
 pub use terminal_element::TerminalElement;
 pub use view::TerminalView;
