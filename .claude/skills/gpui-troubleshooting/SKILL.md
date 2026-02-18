@@ -170,6 +170,41 @@ cx.spawn(async move |this, cx| {
 });
 ```
 
+### Creating Entity in Async Context
+
+**Error**: `RefCell already borrowed` when calling `cx.new()` in async context
+
+**Cause**: `AsyncApp` uses `RefCell` internally. Calling `cx.new()` while already holding a borrow causes panic.
+
+**Solution**: Create Entity in synchronous context, then spawn async tasks
+
+```rust
+// ❌ WRONG - will panic with "RefCell already borrowed"
+pub fn new(cx: &mut AsyncApp) -> Result<Self> {
+    let content = cx.new(|_cx| TerminalContent::new())?; // ERROR!
+    // ...
+}
+
+// ✅ CORRECT - create Entity in sync context
+pub fn new(cx: &mut App) -> Result<Self> {
+    // Create Entity in sync context
+    let content = cx.new(|_cx| TerminalContent::new());
+    
+    // Convert to async context for spawning tasks
+    let async_cx = cx.to_async();
+    let task = async_cx.spawn(async move |cx| {
+        // Async work here...
+    });
+    
+    Ok(Self { content, _task: task })
+}
+```
+
+**Key Points**:
+- Always create `Entity` in synchronous context (`App` or `Context<T>`)
+- Use `cx.to_async()` to get `AsyncApp` for spawning async tasks
+- Avoid `&mut AsyncApp` in function signatures if you need to create entities
+
 ## Trait Errors
 
 ### IntoElement Not Implemented
@@ -376,6 +411,7 @@ match option {
 | Events not received | Subscription dropped | Store in field |
 | Weak entity panic | Not checking `upgrade()` | Use `if let Some(...)` or `?` |
 | Unwrap panic | Calling `.unwrap()` | Use `?` or proper error handling |
+| RefCell borrow | Creating Entity in `AsyncApp` | Use sync context (`App`) to create entities |
 
 ## Debugging Tips
 
@@ -386,6 +422,7 @@ match option {
 5. **Avoid unwrap**: Use `?` for error propagation or explicit error handling
 6. **Check task lifecycle**: Ensure tasks are detached or stored, not dropped
 7. **Watch for nested updates**: Avoid updating entities within update closures
+8. **Create entities in sync context**: Never call `cx.new()` in `AsyncApp` context, use `App` or `Context<T>` instead
 
 ## References
 

@@ -10,8 +10,6 @@ use alacritty_terminal::{
   vte::ansi::Processor,
 };
 use gpui::*;
-use parking_lot::FairMutex;
-use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 /// 终端尺寸结构，用于 alacritty 的 Dimensions trait
@@ -51,55 +49,73 @@ pub struct Terminal {
   /// 向后台任务发送输入
   input_tx: mpsc::Sender<TerminalInput>,
 
-  /// 从后台任务接收更新
-  content_rx: watch::Receiver<TerminalContent>,
+  /// 从后台任务接收内容更新
+  _content_rx: watch::Receiver<TerminalContent>,
 
   /// 后台任务句柄（Drop 时自动取消）
   _task: Task<()>,
+
+  /// UI 更新任务句柄
+  _ui_task: Task<()>,
 }
 
 impl Terminal {
   /// 创建新的终端
-  pub fn new(cx: &mut Context<Self>) -> Self {
-    // 创建 TerminalContent Entity
+  pub fn new(cx: &mut App) -> Result<Self> {
+    // 创建 TerminalContent Entity - 在同步上下文中创建，避免 RefCell borrow 冲突
     let content = cx.new(|_cx| TerminalContent::new());
 
     // 创建输入通道
     let (input_tx, input_rx) = mpsc::channel::<TerminalInput>(1024);
 
-    // 创建内容 watch channel
+    // 创建 watch 通道用于内容同步
     let (content_tx, content_rx) = watch::channel(TerminalContent::new());
 
-    // 获取弱引用用于后台任务
-    let weak_content = content.downgrade();
+    // 获取 AsyncApp 用于后台任务
+    let async_cx = cx.to_async();
 
-    // 创建 Term（alacritty 终端状态）
-    let config = Config::default();
-    // 创建默认尺寸
-    let dimensions = TermDimensions {
-      columns: 80,
-      screen_lines: 24,
-    };
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
-    let listener = ChannelEventListener(event_tx);
-
-    let term = Arc::new(FairMutex::new(Term::new(config, &dimensions, listener)));
-
-    // 启动后台任务
-    let background_task = cx.background_spawn({
-      let term = term.clone();
-
+    // 启动后台任务（Term 在循环内部创建）
+    let background_task = async_cx.background_spawn({
+      let content_tx = content_tx.clone();
       async move {
-        run_terminal_loop(term, input_rx, content_tx, weak_content).await;
+        run_terminal_loop(input_rx, content_tx).await;
       }
     });
 
-    Self {
+    // 启动 UI 更新任务 - 使用 async_cx.spawn 在异步中检查 watch 更新
+    let content_weak = content.downgrade();
+    let mut content_rx_clone = content_rx.clone();
+    let ui_update_task = async_cx.spawn(async move |cx| {
+      loop {
+        // 等待内容变化
+        if content_rx_clone.changed().await.is_err() {
+          // Sender 已关闭，退出循环
+          break;
+        }
+
+        // 获取最新内容
+        let new_content = content_rx_clone.borrow().clone();
+
+        // 更新 Entity (WeakEntity 直接调用 update，失败时返回错误)
+        let result = content_weak.update(cx, |content, cx| {
+          *content = new_content;
+          cx.emit(TerminalEvent::Wakeup);
+        });
+
+        // Entity 已被释放，退出循环
+        if result.is_err() {
+          break;
+        }
+      }
+    });
+
+    Ok(Self {
       content,
       input_tx,
-      content_rx,
+      _content_rx: content_rx,
       _task: background_task,
-    }
+      _ui_task: ui_update_task,
+    })
   }
 
   /// 附加 PTY（本地或 SSH）
@@ -143,9 +159,9 @@ impl Terminal {
     let _ = self.input_tx.try_send(TerminalInput::Resize(size));
   }
 
-  /// 获取当前内容（从 watch channel）
-  pub fn current_content(&self) -> TerminalContent {
-    self.content_rx.borrow().clone()
+  /// 获取当前内容
+  pub fn current_content(&self, cx: &App) -> TerminalContent {
+    self.content.read(cx).clone()
   }
 
   /// 同步终端状态（强制刷新）
@@ -158,80 +174,60 @@ impl EventEmitter<TerminalEvent> for Terminal {}
 
 /// 终端后台循环
 async fn run_terminal_loop(
-  term: Arc<FairMutex<Term<ChannelEventListener>>>,
   mut input_rx: mpsc::Receiver<TerminalInput>,
   content_tx: watch::Sender<TerminalContent>,
-  weak_content: WeakEntity<TerminalContent>,
 ) {
+  // 在循环内部创建 Term，避免使用 Arc<Mutex<_>>
+  let config = Config::default();
+  let dimensions = TermDimensions {
+    columns: 80,
+    screen_lines: 24,
+  };
+  let (event_tx, _event_rx) = mpsc::unbounded_channel();
+  let listener = ChannelEventListener(event_tx);
+
+  let mut term = Term::new(config, &dimensions, listener);
   let mut parser: Processor<alacritty_terminal::vte::ansi::StdSyncHandler> = Processor::new();
 
-  loop {
-    tokio::select! {
-      // 处理 UI 输入
-      Some(input) = input_rx.recv() => {
-        match input {
-          TerminalInput::PtyData(data) => {
-            // 解析 VTE 数据
-            {
-              let mut term_guard = term.lock();
-              parser.advance(&mut *term_guard, &data);
-            }
+  // 处理 UI 输入
+  while let Some(input) = input_rx.recv().await {
+    match input {
+      TerminalInput::PtyData(data) => {
+        // 解析 VTE 数据
+        parser.advance(&mut term, &data);
 
-            // 生成新内容并发送
-            let new_content = make_content(&term);
-            let _ = content_tx.send(new_content.clone());
-
-            // 通知 Entity 更新
-            if let Some(entity) = weak_content.upgrade() {
-              // 在后台线程中无法直接调用 cx.emit
-              // 我们需要通过其他方式通知 UI
-              // 这里简化处理，依赖 UI 端的定期同步
-              drop(entity);
-            }
-          }
-          TerminalInput::Write(_data) => {
-            // 写入数据到 PTY - 需要在这里处理
-            // 由于 Pty trait 的限制，这里简化处理
-          }
-          TerminalInput::Resize(size) => {
-            // 调整终端大小
-            let mut term_guard = term.lock();
-            let dimensions = TermDimensions {
-              columns: size.cols as usize,
-              screen_lines: size.rows as usize,
-            };
-            term_guard.resize(dimensions);
-            drop(term_guard);
-
-            // 发送更新
-            let new_content = make_content(&term);
-            let _ = content_tx.send(new_content);
-          }
-          TerminalInput::Sync => {
-            // 强制刷新
-            let new_content = make_content(&term);
-            let _ = content_tx.send(new_content);
-          }
-          TerminalInput::Shutdown => {
-            break;
-          }
-        }
+        let content = make_content(&term);
+        let _ = content_tx.send(content);
       }
-      else => {
-        // 没有消息时短暂休眠
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+      TerminalInput::Write(_data) => {
+        // 写入数据到 PTY - 需要在这里处理
+        // 由于 Pty trait 的限制，这里简化处理
+      }
+      TerminalInput::Resize(size) => {
+        // 调整终端大小
+        let dimensions = TermDimensions {
+          columns: size.cols as usize,
+          screen_lines: size.rows as usize,
+        };
+        term.resize(dimensions);
+      }
+      TerminalInput::Sync => {
+        let content = make_content(&term);
+        let _ = content_tx.send(content);
+      }
+      TerminalInput::Shutdown => {
+        break;
       }
     }
   }
 }
 
 /// 从 Term 生成 TerminalContent
-fn make_content(term: &Arc<FairMutex<Term<ChannelEventListener>>>) -> TerminalContent {
+fn make_content(term: &Term<ChannelEventListener>) -> TerminalContent {
   let mut content = TerminalContent::new();
-  let term_guard = term.lock();
 
   // 获取网格内容
-  let grid = term_guard.grid();
+  let grid = term.grid();
   let rows = grid.screen_lines();
   let cols = grid.columns();
 
@@ -255,17 +251,15 @@ fn make_content(term: &Arc<FairMutex<Term<ChannelEventListener>>>) -> TerminalCo
   }
 
   content.cells = cells;
-  content.mode = *term_guard.mode();
+  content.mode = *term.mode();
 
   // 获取光标
-  let renderable_content = term_guard.renderable_content();
+  let renderable_content = term.renderable_content();
   content.cursor = renderable_cursor_to_state(&renderable_content.cursor);
 
   // 获取光标处的字符
   let cursor_point = renderable_content.cursor.point;
-  content.cursor_char = term_guard.grid()[cursor_point].c;
-
-  drop(term_guard);
+  content.cursor_char = term.grid()[cursor_point].c;
 
   content
 }

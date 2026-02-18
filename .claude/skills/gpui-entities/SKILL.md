@@ -151,6 +151,20 @@ impl Parent {
 
 ### Using Weak References
 
+WeakEntity 可以直接调用 `update` 和 `read_with` 方法，无需手动 `upgrade()`：n
+```rust
+impl Child {
+    fn notify_parent(&self, cx: &mut Context<Self>) {
+        // 直接调用 update，如果 entity 已被释放则返回 Err
+        let _ = self.parent.update(cx, |parent, cx| {
+            parent.handle_child_event(cx);
+        });
+    }
+}
+```
+
+如果需要手动检查 entity 是否存在，可以使用 `upgrade()`：
+
 ```rust
 impl Child {
     fn notify_parent(&self, cx: &mut Context<Self>) {
@@ -175,8 +189,8 @@ fn do_async_work(&self, cx: &mut Context<Self>) {
         // Async work
         tokio::time::sleep(Duration::from_secs(1)).await;
         
-        // Update returns Result in async context
-        this.update(&mut *cx, |view, cx| {
+        // WeakEntity::update 直接返回 Result，无需 upgrade
+        this.update(cx, |view, cx| {
             view.count += 1;
             cx.notify();
         })?;

@@ -2,11 +2,12 @@ use crate::terminal::content::{TerminalContent, TerminalEvent};
 use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
-  terminal: Entity<Terminal>,
+  terminal: Arc<Terminal>,
   focus_handle: FocusHandle,
   _content_observer: Subscription,
   last_content: TerminalContent,
@@ -14,12 +15,12 @@ pub struct TerminalView {
 
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
-  pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
+  pub fn new(terminal: Arc<Terminal>, cx: &mut Context<Self>) -> Self {
     // 获取内容实体
-    let content_entity = terminal.read(cx).content.clone();
+    let content_entity = terminal.content.clone();
 
     // 获取初始内容
-    let initial_content = terminal.read(cx).current_content();
+    let initial_content = terminal.current_content(cx);
 
     // 观察 TerminalContent 变化
     let content_observer = cx.observe(&content_entity, |this, _content, cx| {
@@ -29,20 +30,20 @@ impl TerminalView {
     });
 
     // 订阅 Terminal 事件
-    let _event_subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
-      match event {
-        TerminalEvent::Wakeup => {
-          this.sync(cx);
-          cx.notify();
-        }
-        TerminalEvent::TitleChanged(_) => {
-          cx.notify();
-        }
-        TerminalEvent::Closed => {
-          // 终端关闭处理
-        }
-      }
-    });
+    // let _event_subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
+    //   match event {
+    //     TerminalEvent::Wakeup => {
+    //       this.sync(cx);
+    //       cx.notify();
+    //     }
+    //     TerminalEvent::TitleChanged(_) => {
+    //       cx.notify();
+    //     }
+    //     TerminalEvent::Closed => {
+    //       // 终端关闭处理
+    //     }
+    //   }
+    // });
 
     // 启动定期同步任务
     cx.spawn(async move |this, cx| {
@@ -82,27 +83,23 @@ impl TerminalView {
   ) {
     let keystroke = event.keystroke.clone();
 
-    self.terminal.update(cx, |terminal, _| {
-      let data = encode_keystroke(&keystroke);
-      terminal.input(data);
-    });
+    let data = encode_keystroke(&keystroke);
+    self.terminal.input(data);
 
     cx.notify();
   }
 
   /// 同步终端状态
   pub fn sync(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _| {
-      terminal.sync();
-    });
+    self.terminal.sync();
 
     // 更新本地缓存
-    let content = self.terminal.read(cx).current_content();
+    let content = self.terminal.current_content(cx);
     self.last_content = content;
   }
 
   /// 获取关联的 Terminal Entity
-  pub fn terminal(&self) -> &Entity<Terminal> {
+  pub fn terminal(&self) -> &Terminal {
     &self.terminal
   }
 }
@@ -110,11 +107,11 @@ impl TerminalView {
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     // 获取当前内容
-    let content = self.terminal.read(cx).current_content();
+    let content = self.terminal.current_content(cx);
     self.last_content = content.clone();
 
     // 获取内容实体
-    let content_entity = self.terminal.read(cx).content.clone();
+    let content_entity = self.terminal.content.clone();
 
     div()
       .id("terminal-view")

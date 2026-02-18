@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
@@ -19,7 +20,7 @@ pub fn generate_tab_id() -> TabId {
 #[derive(Clone)]
 pub enum TabType {
   /// 终端 Tab
-  Terminal(Entity<Terminal>),
+  Terminal(Arc<Terminal>),
   /// SFTP Tab (TODO: 实现)
   Sftp,
 }
@@ -67,8 +68,8 @@ impl TabItem {
 
   /// 创建一个新的 Terminal Tab
   pub fn new_terminal(cx: &mut gpui::Context<Workspace>, rows: usize, cols: usize) -> Self {
-    // 创建 Terminal Entity
-    let terminal = cx.new(|cx| Terminal::new(cx));
+    // 创建 Terminal Entity - 在同步上下文中创建
+    let terminal = Arc::new(Terminal::new(cx).expect("Failed to create terminal"));
 
     // 在后台附加本地 PTY
     cx.spawn(async move |this, cx| {
