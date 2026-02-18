@@ -1,19 +1,26 @@
+use std::collections::HashMap;
+
 use gpui::*;
 use gpui_component::WindowExt;
 use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
 
 use crate::terminal::TerminalView;
-use crate::workspace::{TabType, Workspace};
+use crate::workspace::{TabId, TabType, Workspace};
 
 /// Main view
 pub struct MainView {
   pub workspace: Entity<Workspace>,
+  /// Cache terminal views by tab ID so they aren't recreated on every render
+  terminal_views: HashMap<TabId, Entity<TerminalView>>,
 }
 
 impl MainView {
   pub fn new(workspace: Entity<Workspace>) -> Self {
-    Self { workspace }
+    Self {
+      workspace,
+      terminal_views: HashMap::new(),
+    }
   }
 
   fn handle_tab_click(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
@@ -144,14 +151,21 @@ impl MainView {
       )
   }
 
-  fn render_active_tab_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render_active_tab_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let active_tab = self.workspace.read(cx).active_tab().cloned();
 
     if let Some(tab) = active_tab {
       match &tab.tab_type {
         TabType::Terminal(terminal) => {
-          // 创建 TerminalView 来显示终端，使用 Tab 关联的 Terminal Entity
-          let terminal_view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
+          // Reuse existing TerminalView or create one
+          let terminal_view = self
+            .terminal_views
+            .entry(tab.id)
+            .or_insert_with(|| cx.new(|cx| TerminalView::new(terminal.clone(), cx)))
+            .clone();
+
+          // Ensure the terminal view is focused so it receives key events
+          terminal_view.focus_handle(cx).focus(window);
 
           div()
             .flex_1()
@@ -186,7 +200,12 @@ impl MainView {
 }
 
 impl Render for MainView {
-  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    // Clean up terminal views for closed tabs
+    let tab_ids: std::collections::HashSet<TabId> =
+      self.workspace.read(cx).tabs.iter().map(|t| t.id).collect();
+    self.terminal_views.retain(|id, _| tab_ids.contains(id));
+
     div()
       .v_flex()
       .size_full()
@@ -197,7 +216,7 @@ impl Render for MainView {
           .v_flex()
           .flex_1()
           .size_full()
-          .child(self.render_active_tab_content(cx)),
+          .child(self.render_active_tab_content(window, cx)),
       )
   }
 }

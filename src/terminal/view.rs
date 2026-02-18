@@ -103,57 +103,57 @@ fn encode_keystroke(keystroke: &Keystroke) -> Vec<u8> {
   let key = keystroke.key.as_str();
   let modifiers = &keystroke.modifiers;
 
-  match key {
-    // 单字符输入（字母、数字、符号）
-    k if k.len() == 1 => {
-      let ch = k.chars().next().unwrap_or('\0');
-
-      // 处理 Ctrl 修饰符
-      if modifiers.control && ch.is_ascii_alphabetic() {
-        let byte = ch.to_ascii_lowercase() as u8;
-        vec![byte - b'a' + 1] // Ctrl+A = 0x01
-      } else {
-        k.as_bytes().to_vec()
-      }
+  // 处理 Ctrl 修饰符
+  if modifiers.control && key.len() == 1 {
+    let ch = key.chars().next().unwrap_or('\0');
+    if ch.is_ascii_alphabetic() {
+      return vec![ch.to_ascii_lowercase() as u8 - b'a' + 1]; // Ctrl+A = 0x01
     }
-
-    // 功能键
-    "enter" | "return" => vec![b'\r'],
-    "escape" | "esc" => vec![0x1b],
-    "tab" => vec![b'\t'],
-    "backspace" => vec![0x08],
-    "delete" | "del" => vec![0x1b, b'[', b'3', b'~'],
-    "insert" | "ins" => vec![0x1b, b'[', b'2', b'~'],
-
-    // 方向键
-    "up" => vec![0x1b, b'[', b'A'],
-    "down" => vec![0x1b, b'[', b'B'],
-    "right" => vec![0x1b, b'[', b'C'],
-    "left" => vec![0x1b, b'[', b'D'],
-
-    // Home/End
-    "home" => vec![0x1b, b'[', b'H'],
-    "end" => vec![0x1b, b'[', b'F'],
-
-    // Page Up/Down
-    "pageup" | "page up" => vec![0x1b, b'[', b'5', b'~'],
-    "pagedown" | "page down" => vec![0x1b, b'[', b'6', b'~'],
-
-    // 功能键 F1-F12
-    "f1" => vec![0x1b, b'[', b'1', b'1', b'~'],
-    "f2" => vec![0x1b, b'[', b'1', b'2', b'~'],
-    "f3" => vec![0x1b, b'[', b'1', b'3', b'~'],
-    "f4" => vec![0x1b, b'[', b'1', b'4', b'~'],
-    "f5" => vec![0x1b, b'[', b'1', b'5', b'~'],
-    "f6" => vec![0x1b, b'[', b'1', b'7', b'~'],
-    "f7" => vec![0x1b, b'[', b'1', b'8', b'~'],
-    "f8" => vec![0x1b, b'[', b'1', b'9', b'~'],
-    "f9" => vec![0x1b, b'[', b'2', b'0', b'~'],
-    "f10" => vec![0x1b, b'[', b'2', b'1', b'~'],
-    "f11" => vec![0x1b, b'[', b'2', b'3', b'~'],
-    "f12" => vec![0x1b, b'[', b'2', b'4', b'~'],
-
-    // 其他未处理的键
-    _ => vec![],
   }
+
+  // 功能键和特殊键使用 key 字段
+  match key {
+    "enter" | "return" => return vec![b'\r'],
+    "escape" | "esc" => return vec![0x1b],
+    "tab" => return vec![b'\t'],
+    "backspace" => return vec![0x7f],
+    "delete" | "del" => return vec![0x1b, b'[', b'3', b'~'],
+    "insert" | "ins" => return vec![0x1b, b'[', b'2', b'~'],
+    "up" => return vec![0x1b, b'[', b'A'],
+    "down" => return vec![0x1b, b'[', b'B'],
+    "right" => return vec![0x1b, b'[', b'C'],
+    "left" => return vec![0x1b, b'[', b'D'],
+    "home" => return vec![0x1b, b'[', b'H'],
+    "end" => return vec![0x1b, b'[', b'F'],
+    "pageup" | "page up" => return vec![0x1b, b'[', b'5', b'~'],
+    "pagedown" | "page down" => return vec![0x1b, b'[', b'6', b'~'],
+    "f1" => return vec![0x1b, b'O', b'P'],
+    "f2" => return vec![0x1b, b'O', b'Q'],
+    "f3" => return vec![0x1b, b'O', b'R'],
+    "f4" => return vec![0x1b, b'O', b'S'],
+    "f5" => return vec![0x1b, b'[', b'1', b'5', b'~'],
+    "f6" => return vec![0x1b, b'[', b'1', b'7', b'~'],
+    "f7" => return vec![0x1b, b'[', b'1', b'8', b'~'],
+    "f8" => return vec![0x1b, b'[', b'1', b'9', b'~'],
+    "f9" => return vec![0x1b, b'[', b'2', b'0', b'~'],
+    "f10" => return vec![0x1b, b'[', b'2', b'1', b'~'],
+    "f11" => return vec![0x1b, b'[', b'2', b'3', b'~'],
+    "f12" => return vec![0x1b, b'[', b'2', b'4', b'~'],
+    "space" => return vec![b' '],
+    _ => {}
+  }
+
+  // 对于普通字符输入，优先使用 key_char（包含实际输入的字符，处理了 IME 和 shift 等）
+  if let Some(key_char) = &keystroke.key_char {
+    if !key_char.is_empty() {
+      return key_char.as_bytes().to_vec();
+    }
+  }
+
+  // 回退到 key 字段
+  if key.len() == 1 {
+    return key.as_bytes().to_vec();
+  }
+
+  vec![]
 }
