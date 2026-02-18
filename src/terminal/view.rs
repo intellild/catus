@@ -1,9 +1,8 @@
-use crate::terminal::content::{TerminalContent, TerminalEvent};
+use crate::terminal::content::TerminalContent;
 use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
@@ -28,43 +27,6 @@ impl TerminalView {
       this.sync(cx);
       cx.notify();
     });
-
-    // 订阅 Terminal 事件
-    // let _event_subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
-    //   match event {
-    //     TerminalEvent::Wakeup => {
-    //       this.sync(cx);
-    //       cx.notify();
-    //     }
-    //     TerminalEvent::TitleChanged(_) => {
-    //       cx.notify();
-    //     }
-    //     TerminalEvent::Closed => {
-    //       // 终端关闭处理
-    //     }
-    //   }
-    // });
-
-    // 启动定期同步任务
-    cx.spawn(async move |this, cx| {
-      loop {
-        cx.background_executor()
-          .timer(Duration::from_millis(16))
-          .await;
-
-        let result = this.update(&mut *cx, |this, cx| {
-          this.sync(cx);
-          cx.notify();
-        });
-
-        if result.is_err() {
-          break;
-        }
-      }
-
-      anyhow::Ok(())
-    })
-    .detach();
 
     Self {
       terminal,
