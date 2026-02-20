@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
@@ -20,7 +19,7 @@ pub fn generate_tab_id() -> TabId {
 #[derive(Clone)]
 pub enum TabType {
   /// 终端 Tab
-  Terminal(Arc<Terminal>),
+  Terminal(Entity<Terminal>),
   /// SFTP Tab (TODO: 实现)
   Sftp,
 }
@@ -80,17 +79,14 @@ impl TabItem {
     let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
     let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
 
-    // 创建 Terminal，直接传入 PTY
-    let terminal =
-      Terminal::new(Box::new(pty), cx).map_err(|e| format!("Failed to create terminal: {}", e))?;
-
-    // 包装成 Arc
-    let terminal_arc = Arc::new(terminal);
+    // 创建 Terminal Entity
+    let terminal_entity =
+      cx.new(|cx| Terminal::new(Box::new(pty), cx).expect("Failed to create terminal"));
 
     Ok(Self {
       id: generate_tab_id(),
       state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
-      tab_type: TabType::Terminal(terminal_arc),
+      tab_type: TabType::Terminal(terminal_entity),
     })
   }
 

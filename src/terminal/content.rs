@@ -37,6 +37,19 @@ pub struct SelectionRange {
   pub end: TerminalPoint,
 }
 
+/// 选区类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionType {
+  /// 简单选区（字符级）
+  Simple,
+  /// 块选区（矩形）
+  Block,
+  /// 语义选区（单词）
+  Semantic,
+  /// 行选区
+  Lines,
+}
+
 /// 终端边界信息
 #[derive(Clone, Copy, Debug)]
 pub struct TerminalBounds {

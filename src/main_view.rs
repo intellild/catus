@@ -151,7 +151,11 @@ impl MainView {
       )
   }
 
-  fn render_active_tab_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render_active_tab_content(
+    &mut self,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement {
     let active_tab = self.workspace.read(cx).active_tab().cloned();
 
     if let Some(tab) = active_tab {

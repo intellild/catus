@@ -2,28 +2,24 @@ use crate::terminal::content::TerminalContent;
 use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
-use std::sync::Arc;
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
-  terminal: Arc<Terminal>,
+  terminal: Entity<Terminal>,
   focus_handle: FocusHandle,
-  _content_observer: Subscription,
+  _terminal_observer: Subscription,
   last_content: TerminalContent,
 }
 
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
-  pub fn new(terminal: Arc<Terminal>, cx: &mut Context<Self>) -> Self {
-    // 获取内容实体
-    let content_entity = terminal.content.clone();
-
+  pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
     // 获取初始内容
-    let initial_content = terminal.current_content(cx);
+    let initial_content = terminal.read(cx).content().clone();
 
-    // 观察 TerminalContent 变化
-    let content_observer = cx.observe(&content_entity, |this, _content, cx| {
-      // 内容变化时更新本地缓存并重绘
+    // 观察 Terminal 实体变化（包含 content 更新）
+    let terminal_observer = cx.observe(&terminal, |this, _terminal, cx| {
+      // Terminal 内容变化时更新本地缓存并重绘
       this.sync(cx);
       cx.notify();
     });
@@ -31,7 +27,7 @@ impl TerminalView {
     Self {
       terminal,
       focus_handle: cx.focus_handle(),
-      _content_observer: content_observer,
+      _terminal_observer: terminal_observer,
       last_content: initial_content,
     }
   }
@@ -43,37 +39,104 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let keystroke = event.keystroke.clone();
+    let data = encode_keystroke(&event.keystroke);
+    self.terminal.update(cx, |terminal, _cx| {
+      let _ = terminal.input(data);
+    });
+  }
 
-    let data = encode_keystroke(&keystroke);
-    self.terminal.input(data);
-
-    cx.notify();
+  /// 处理粘贴事件
+  fn handle_paste(&mut self, text: &str, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.paste(text);
+    });
   }
 
   /// 同步终端状态
   pub fn sync(&mut self, cx: &mut Context<Self>) {
-    self.terminal.sync();
+    // 更新终端状态
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.sync(_cx);
+    });
 
     // 更新本地缓存
-    let content = self.terminal.current_content(cx);
+    let content = self.terminal.read(cx).content().clone();
     self.last_content = content;
+
+    cx.notify();
   }
 
   /// 获取关联的 Terminal Entity
-  pub fn terminal(&self) -> &Terminal {
+  pub fn terminal(&self) -> &Entity<Terminal> {
     &self.terminal
+  }
+
+  /// 向上滚动一行
+  pub fn scroll_line_up(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_line_up();
+    });
+  }
+
+  /// 向下滚动一行
+  pub fn scroll_line_down(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_line_down();
+    });
+  }
+
+  /// 向上滚动一页
+  pub fn scroll_page_up(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_page_up();
+    });
+  }
+
+  /// 向下滚动一页
+  pub fn scroll_page_down(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_page_down();
+    });
+  }
+
+  /// 滚动到顶部
+  pub fn scroll_to_top(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_to_top();
+    });
+  }
+
+  /// 滚动到底部
+  pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.scroll_to_bottom();
+    });
+  }
+
+  /// 清除屏幕
+  pub fn clear(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.clear();
+    });
+  }
+
+  /// 复制选区
+  pub fn copy(&mut self, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, _cx| {
+      terminal.copy();
+    });
   }
 }
 
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // 获取当前内容
-    let content = self.terminal.current_content(cx);
+    // 获取当前内容（直接从 Terminal 读取）
+    let content = self.terminal.read(cx).content().clone();
     self.last_content = content.clone();
 
-    // 获取内容实体
-    let content_entity = self.terminal.content.clone();
+    // 创建一个临时内容实体，用于 TerminalElement
+    // 由于 TerminalElement 期望 Entity<TerminalContent>，我们需要创建一个
+    let content_entity = cx.new(|_cx| content);
 
     div()
       .id("terminal-view")
@@ -82,7 +145,7 @@ impl Render for TerminalView {
       .cursor_text()
       .child(TerminalElement::new(
         content_entity,
-        content,
+        self.last_content.clone(),
         self.focus_handle.clone(),
       ))
       .on_key_down(cx.listener(|this, event, window, cx| {

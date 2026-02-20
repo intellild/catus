@@ -7,7 +7,10 @@ pub mod terminal_element;
 pub mod view;
 
 // 重导出主要类型
-pub use content::TerminalContent;
+pub use content::{
+  CursorState, IndexedCell, SelectionRange, SelectionType, TerminalBounds, TerminalContent,
+  TerminalEvent, TerminalPoint,
+};
 pub use local_pty::LocalPty;
 pub use pty::{Pty, TerminalSize};
 pub use terminal::Terminal;
