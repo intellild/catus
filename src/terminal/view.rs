@@ -6,23 +6,14 @@ use gpui::*;
 pub struct TerminalView {
   terminal: Entity<Terminal>,
   focus_handle: FocusHandle,
-  _terminal_observer: Subscription,
 }
 
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
   pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
-    // 观察 Terminal 实体变化（包含 content 更新）
-    let terminal_observer = cx.observe(&terminal, |this, _terminal, cx| {
-      // Terminal 内容变化时同步并重绘
-      this.sync(cx);
-      cx.notify();
-    });
-
     Self {
       terminal,
       focus_handle: cx.focus_handle(),
-      _terminal_observer: terminal_observer,
     }
   }
 
@@ -44,16 +35,6 @@ impl TerminalView {
     self.terminal.update(cx, |terminal, _cx| {
       terminal.paste(text);
     });
-  }
-
-  /// 同步终端状态
-  pub fn sync(&mut self, cx: &mut Context<Self>) {
-    // 更新终端状态
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.sync(_cx);
-    });
-
-    cx.notify();
   }
 
   /// 获取关联的 Terminal Entity
