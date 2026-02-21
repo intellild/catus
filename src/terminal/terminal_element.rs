@@ -1,4 +1,4 @@
-use crate::terminal::content::{TerminalContent, ansi_color_to_rgb, rgb_to_hsla};
+use crate::terminal::content::{ansi_color_to_rgb, rgb_to_hsla, TerminalContent};
 use alacritty_terminal::term::cell::Flags;
 use gpui::*;
 use std::mem;
@@ -59,14 +59,13 @@ pub struct TerminalElement {
 
 impl TerminalElement {
   /// 创建新的 TerminalElement
-  pub fn new(
-    content_entity: Entity<TerminalContent>,
-    content: TerminalContent,
-    focus_handle: FocusHandle,
-  ) -> Self {
+  pub fn new(content_entity: Entity<TerminalContent>, focus_handle: FocusHandle) -> Self {
+    // 初始化时使用空内容，prepaint 时会从实体读取
+    let initial_content = TerminalContent::new();
+
     Self {
       content_entity,
-      content,
+      content: initial_content,
       char_width: px(8.),
       char_height: px(16.),
       focus_handle,

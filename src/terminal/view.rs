@@ -1,4 +1,3 @@
-use crate::terminal::content::TerminalContent;
 use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
@@ -8,18 +7,14 @@ pub struct TerminalView {
   terminal: Entity<Terminal>,
   focus_handle: FocusHandle,
   _terminal_observer: Subscription,
-  last_content: TerminalContent,
 }
 
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
   pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
-    // 获取初始内容
-    let initial_content = terminal.read(cx).content().clone();
-
     // 观察 Terminal 实体变化（包含 content 更新）
     let terminal_observer = cx.observe(&terminal, |this, _terminal, cx| {
-      // Terminal 内容变化时更新本地缓存并重绘
+      // Terminal 内容变化时同步并重绘
       this.sync(cx);
       cx.notify();
     });
@@ -28,7 +23,6 @@ impl TerminalView {
       terminal,
       focus_handle: cx.focus_handle(),
       _terminal_observer: terminal_observer,
-      last_content: initial_content,
     }
   }
 
@@ -58,10 +52,6 @@ impl TerminalView {
     self.terminal.update(cx, |terminal, _cx| {
       terminal.sync(_cx);
     });
-
-    // 更新本地缓存
-    let content = self.terminal.read(cx).content().clone();
-    self.last_content = content;
 
     cx.notify();
   }
@@ -132,7 +122,6 @@ impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     // 获取当前内容（直接从 Terminal 读取）
     let content = self.terminal.read(cx).content().clone();
-    self.last_content = content.clone();
 
     // 创建一个临时内容实体，用于 TerminalElement
     // 由于 TerminalElement 期望 Entity<TerminalContent>，我们需要创建一个
@@ -145,7 +134,6 @@ impl Render for TerminalView {
       .cursor_text()
       .child(TerminalElement::new(
         content_entity,
-        self.last_content.clone(),
         self.focus_handle.clone(),
       ))
       .on_key_down(cx.listener(|this, event, window, cx| {
