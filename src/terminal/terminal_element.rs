@@ -1,4 +1,5 @@
 use crate::terminal::content::{ansi_color_to_rgb, rgb_to_hsla, TerminalContent};
+use crate::terminal::terminal::Terminal;
 use alacritty_terminal::term::cell::Flags;
 use gpui::*;
 use std::mem;
@@ -50,7 +51,7 @@ impl BatchedTextRun {
 
 /// 自定义 Terminal Element，使用 paint 方式渲染终端内容
 pub struct TerminalElement {
-  content_entity: Entity<TerminalContent>,
+  terminal: Entity<Terminal>,
   content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
@@ -59,12 +60,12 @@ pub struct TerminalElement {
 
 impl TerminalElement {
   /// 创建新的 TerminalElement
-  pub fn new(content_entity: Entity<TerminalContent>, focus_handle: FocusHandle) -> Self {
-    // 初始化时使用空内容，prepaint 时会从实体读取
+  pub fn new(terminal: Entity<Terminal>, focus_handle: FocusHandle) -> Self {
+    // 初始化时使用空内容，prepaint 时会从 Terminal 读取
     let initial_content = TerminalContent::new();
 
     Self {
-      content_entity,
+      terminal,
       content: initial_content,
       char_width: px(8.),
       char_height: px(16.),
@@ -295,8 +296,8 @@ impl Element for TerminalElement {
   ) -> Self::PrepaintState {
     self.calculate_char_dimensions(window);
 
-    // 从 content_entity 获取最新内容
-    let content = self.content_entity.read(cx).clone();
+    // 从 Terminal 实体获取最新内容
+    let content = self.terminal.read(cx).content().clone();
     self.content = content.clone();
 
     LayoutState {

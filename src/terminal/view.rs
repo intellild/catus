@@ -120,20 +120,13 @@ impl TerminalView {
 
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // 获取当前内容（直接从 Terminal 读取）
-    let content = self.terminal.read(cx).content().clone();
-
-    // 创建一个临时内容实体，用于 TerminalElement
-    // 由于 TerminalElement 期望 Entity<TerminalContent>，我们需要创建一个
-    let content_entity = cx.new(|_cx| content);
-
     div()
       .id("terminal-view")
       .size_full()
       .bg(gpui::rgb(0x1e1e1e))
       .cursor_text()
       .child(TerminalElement::new(
-        content_entity,
+        self.terminal.clone(),
         self.focus_handle.clone(),
       ))
       .on_key_down(cx.listener(|this, event, window, cx| {
