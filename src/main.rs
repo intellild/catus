@@ -4,6 +4,7 @@ use gpui_component::Root;
 mod app;
 mod main_view;
 mod terminal;
+mod tiles;
 mod workspace;
 
 use app::App as CatusApp;
