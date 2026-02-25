@@ -110,6 +110,9 @@ impl Render for TerminalView {
         self.terminal.clone(),
         self.focus_handle.clone(),
       ))
+      .on_click(cx.listener(|this, event, window, cx| {
+        this.focus_handle(cx).focus(window);
+      }))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))

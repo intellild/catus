@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
+use crate::placeholder::PlaceholderView;
+use crate::terminal::TerminalView;
+use crate::tiles::{Tile, TileView};
+use crate::workspace::{TabId, TabType, Workspace};
 use gpui::*;
 use gpui_component::WindowExt;
 use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, tab::*, *};
-
-use crate::terminal::TerminalView;
-use crate::workspace::{TabId, TabType, Workspace};
 
 /// Main view
 pub struct MainView {
@@ -169,7 +170,7 @@ impl MainView {
             .clone();
 
           // Ensure the terminal view is focused so it receives key events
-          terminal_view.focus_handle(cx).focus(window);
+          // terminal_view.focus_handle(cx).focus(window);
 
           div()
             .flex_1()
@@ -210,6 +211,9 @@ impl Render for MainView {
       self.workspace.read(cx).tabs.iter().map(|t| t.id).collect();
     self.terminal_views.retain(|id, _| tab_ids.contains(id));
 
+    let placeholder = cx.new(|_| PlaceholderView);
+    let root_tile = cx.new(|_| Tile::Content(placeholder.into()));
+
     div()
       .v_flex()
       .size_full()
@@ -220,7 +224,7 @@ impl Render for MainView {
           .v_flex()
           .flex_1()
           .size_full()
-          .child(self.render_active_tab_content(window, cx)),
+          .child(cx.new(|cx| TileView::new(root_tile, None, cx))),
       )
   }
 }

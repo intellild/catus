@@ -3,6 +3,7 @@ use gpui_component::Root;
 
 mod app;
 mod main_view;
+mod placeholder;
 mod terminal;
 mod tiles;
 mod workspace;
