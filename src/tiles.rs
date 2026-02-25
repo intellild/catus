@@ -29,20 +29,29 @@ impl TileView {
 
 impl Render for TileView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let tile = self.tile.read(cx);
+    let children = match self.tile.read(cx) {
+      Tile::EvenVertical(top, bottom) => Some((top.clone(), bottom.clone(), true)),
+      Tile::EvenHorizontal(left, right) => Some((left.clone(), right.clone(), false)),
+      Tile::Content(child) => return child.clone().into_any(),
+    };
 
-    match tile {
-      Tile::EvenVertical(top, bottom) => container()
-        .flex_col()
-        .child(Self::render_child(bottom.clone(), cx))
-        .child(Self::render_child(bottom.clone(), cx))
-        .into_any(),
-      Tile::EvenHorizontal(left, right) => container()
-        .flex_row()
-        .child(Self::render_child(left.clone(), cx))
-        .child(Self::render_child(right.clone(), cx))
-        .into_any(),
-      Tile::Content(child) => child.clone().into_any(),
+    if let Some((first, second, is_vertical)) = children {
+      let container = container();
+      if is_vertical {
+        container
+          .flex_col()
+          .child(Self::render_child(first, cx))
+          .child(Self::render_child(second, cx))
+          .into_any()
+      } else {
+        container
+          .flex_row()
+          .child(Self::render_child(first, cx))
+          .child(Self::render_child(second, cx))
+          .into_any()
+      }
+    } else {
+      div().into_any()
     }
   }
 }
