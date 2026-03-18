@@ -33,7 +33,7 @@ impl TerminalView {
   /// 处理粘贴事件
   fn handle_paste(&mut self, text: &str, cx: &mut Context<Self>) {
     self.terminal.update(cx, |terminal, _cx| {
-      terminal.paste(text);
+      // terminal.paste(text);
     });
   }
 
@@ -87,14 +87,14 @@ impl TerminalView {
   /// 清除屏幕
   pub fn clear(&mut self, cx: &mut Context<Self>) {
     self.terminal.update(cx, |terminal, _cx| {
-      terminal.clear();
+      // terminal.clear();
     });
   }
 
   /// 复制选区
   pub fn copy(&mut self, cx: &mut Context<Self>) {
     self.terminal.update(cx, |terminal, _cx| {
-      terminal.copy();
+      // terminal.copy();
     });
   }
 }
