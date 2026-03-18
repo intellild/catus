@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_channel::Receiver;
+use async_trait::async_trait;
 
 /// 终端尺寸
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +39,7 @@ impl TerminalSize {
 /// 内部通过 `Arc<Mutex<_>>` 实现可变性。
 ///
 /// 需要 `Send + Sync` bound 以支持多线程访问。
+#[async_trait]
 pub trait Pty: Send + Sync {
   /// 写入数据到 PTY
   ///
@@ -46,7 +48,7 @@ pub trait Pty: Send + Sync {
   ///
   /// # Errors
   /// 如果写入失败则返回错误
-  fn write(&self, data: &[u8]) -> Result<()>;
+  async fn write(&self, data: &[u8]) -> Result<()>;
 
   /// 调整 PTY 大小
   ///
@@ -55,7 +57,7 @@ pub trait Pty: Send + Sync {
   ///
   /// # Errors
   /// 如果调整大小失败则返回错误
-  fn resize(&self, size: TerminalSize) -> Result<()>;
+  async fn resize(&self, size: TerminalSize) -> Result<()>;
 
   /// 启动读取循环，返回数据接收器
   ///

@@ -2,6 +2,7 @@ use crate::terminal::Pty;
 use crate::terminal::pty::TerminalSize;
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender, unbounded};
+use async_trait::async_trait;
 use portable_pty::{Child, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -152,21 +153,23 @@ impl LocalPty {
   }
 }
 
+#[async_trait]
 impl Pty for LocalPty {
   /// 写入数据到 PTY
   ///
   /// 使用 `&self` 而非 `&mut self`，内部使用 Arc<Mutex<_>> 实现可变性
-  fn write(&self, data: &[u8]) -> Result<()> {
+  async fn write(&self, data: &[u8]) -> Result<()> {
     self
       .write_tx
-      .send_blocking(WriteCommand::Write(data.to_vec()))
+      .send(WriteCommand::Write(data.to_vec()))
+      .await
       .map_err(|e| anyhow::anyhow!("Failed to send write command: {}", e))
   }
 
   /// 调整 PTY 大小
   ///
   /// 使用 `&self` 而非 `&mut self`，内部使用 Arc<Mutex<_>> 实现可变性
-  fn resize(&self, size: TerminalSize) -> Result<()> {
+  async fn resize(&self, size: TerminalSize) -> Result<()> {
     let pty_size = PtySize {
       rows: size.rows,
       cols: size.cols,
@@ -176,7 +179,8 @@ impl Pty for LocalPty {
 
     self
       .write_tx
-      .send_blocking(WriteCommand::Resize(pty_size))
+      .send(WriteCommand::Resize(pty_size))
+      .await
       .map_err(|e| anyhow::anyhow!("Failed to send resize command: {}", e))
   }
 
@@ -195,7 +199,7 @@ impl Pty for LocalPty {
   /// 关闭 PTY
   fn close(&self) -> Result<()> {
     // 关闭写入通道，这会终止写入线程
-    drop(&self.write_tx);
+    let _ = self.write_tx;
 
     // 尝试杀死子进程
     if let Ok(mut child) = Arc::try_unwrap(Arc::clone(&self.child)) {
