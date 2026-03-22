@@ -3,9 +3,9 @@ use crate::terminal::pty::TerminalSize;
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender, unbounded};
 use async_trait::async_trait;
-use portable_pty::{Child, CommandBuilder, PtySize};
+use blocking::unblock;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -20,13 +20,11 @@ enum WriteCommand {
 /// 使用 `Arc<Mutex<_>>` 实现内部可变性，支持 `&self` 方法（类似 Zed 的设计）
 pub struct LocalPty {
   process_id: Option<u32>,
-  child: Arc<Box<dyn Child + Send + Sync>>,
-  writer: Arc<Mutex<Box<dyn Write + Send>>>,
-  master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
-  write_tx: Sender<WriteCommand>,
-  _write_handle: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
-  _read_handle: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
-  read_rx: Mutex<Option<Receiver<Vec<u8>>>>,
+  child: Box<dyn Child + Send + Sync>,
+  reader_handle: JoinHandle<Result<()>>,
+  reader_rx: Receiver<Vec<u8>>,
+  writer_handle: JoinHandle<Result<()>>,
+  writer_tx: Sender<WriteCommand>,
 }
 
 impl LocalPty {
@@ -83,72 +81,20 @@ impl LocalPty {
       .try_clone_reader()
       .with_context(|| "Failed to get PTY reader")?;
 
-    // 创建写入通道
-    let (write_tx, write_rx) = unbounded::<WriteCommand>();
-
-    // 启动写入线程
-    let writer_clone = Arc::new(Mutex::new(writer));
-    let writer_for_thread = writer_clone.clone();
-    let master_for_resize = Arc::new(Mutex::new(master));
-    let master_for_thread = master_for_resize.clone();
-
-    let write_handle = thread::spawn(move || -> Result<()> {
-      while let Ok(cmd) = write_rx.recv_blocking() {
-        match cmd {
-          WriteCommand::Write(data) => {
-            if let Ok(mut w) = writer_for_thread.lock() {
-              w.write_all(&data)?;
-              w.flush()?;
-            }
-          }
-          WriteCommand::Resize(size) => {
-            if let Ok(m) = master_for_thread.lock() {
-              let _ = m.resize(size);
-            }
-          }
-        }
-      }
-      Ok(())
-    });
-
     // 创建读取通道
-    let (read_tx, read_rx) = unbounded::<Vec<u8>>();
+    let (reader_tx, reader_rx) = unbounded::<Vec<u8>>();
+    let (writer_tx, writer_rx) = unbounded::<WriteCommand>();
 
-    // 启动读取线程
-    let mut reader_for_thread = reader;
-    let read_handle = thread::spawn(move || -> Result<()> {
-      loop {
-        let mut buf = vec![0u8; 4096];
-        match reader_for_thread.read(&mut buf) {
-          Ok(0) => {
-            // EOF - PTY 关闭
-            break;
-          }
-          Ok(size) => {
-            buf.resize(size, 0u8);
-            if read_tx.send_blocking(buf).is_err() {
-              // 接收端关闭
-              break;
-            }
-          }
-          Err(e) => {
-            eprintln!("PTY read error: {}", e);
-            break;
-          }
-        }
-      }
-      Ok(())
-    });
+    let reader_handle = run_reader(reader, reader_tx);
+    let writer_handle = run_writer(master, writer_rx)?;
 
     Ok(Self {
       process_id,
-      child: Arc::new(child),
-      writer: writer_clone,
-      master: master_for_resize,
-      write_tx,
-      _write_handle: Arc::new(Mutex::new(Some(write_handle))),
-      _read_handle: Arc::new(Mutex::new(Some(read_handle))),
-      read_rx: Mutex::new(Some(read_rx)),
+      child,
+      reader_handle,
+      reader_rx,
+      writer_handle,
+      writer_tx,
     })
   }
 }
@@ -156,19 +102,13 @@ impl LocalPty {
 #[async_trait]
 impl Pty for LocalPty {
   /// 写入数据到 PTY
-  ///
-  /// 使用 `&self` 而非 `&mut self`，内部使用 Arc<Mutex<_>> 实现可变性
-  async fn write(&self, data: &[u8]) -> Result<()> {
-    self
-      .write_tx
-      .send(WriteCommand::Write(data.to_vec()))
-      .await
-      .map_err(|e| anyhow::anyhow!("Failed to send write command: {}", e))
+  async fn write(&self, data: Vec<u8>) -> Result<()> {
+    self.writer_tx.send(WriteCommand::Write(data)).await?;
+
+    Ok(())
   }
 
   /// 调整 PTY 大小
-  ///
-  /// 使用 `&self` 而非 `&mut self`，内部使用 Arc<Mutex<_>> 实现可变性
   async fn resize(&self, size: TerminalSize) -> Result<()> {
     let pty_size = PtySize {
       rows: size.rows,
@@ -177,34 +117,21 @@ impl Pty for LocalPty {
       pixel_height: size.pixel_height,
     };
 
-    self
-      .write_tx
-      .send(WriteCommand::Resize(pty_size))
-      .await
-      .map_err(|e| anyhow::anyhow!("Failed to send resize command: {}", e))
+    self.writer_tx.send(WriteCommand::Resize(pty_size)).await?;
+
+    Ok(())
   }
 
-  /// 启动读取循环，返回数据接收器
-  ///
-  /// 注意：只能调用一次，第二次调用会 panic
-  fn start_reader(&self) -> Receiver<Vec<u8>> {
-    self
-      .read_rx
-      .lock()
-      .unwrap()
-      .take()
-      .expect("start_reader() can only be called once")
+  fn reader(&self) -> Receiver<Vec<u8>> {
+    self.reader_rx.clone()
   }
 
   /// 关闭 PTY
-  fn close(&self) -> Result<()> {
-    // 关闭写入通道，这会终止写入线程
-    let _ = self.write_tx;
+  async fn close(&mut self) -> Result<()> {
+    let _ = self.writer_tx;
 
-    // 尝试杀死子进程
-    if let Ok(mut child) = Arc::try_unwrap(Arc::clone(&self.child)) {
-      let _ = child.kill();
-    }
+    let mut killer = self.child.clone_killer();
+    unblock(move || killer.kill()).await?;
 
     Ok(())
   }
@@ -220,4 +147,58 @@ impl Drop for LocalPty {
     // 确保关闭 PTY
     let _ = self.close();
   }
+}
+
+fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) -> JoinHandle<Result<()>> {
+  // 启动读取线程
+  thread::spawn(move || -> Result<()> {
+    loop {
+      let mut buf = vec![0u8; 4096];
+      match reader.read(&mut buf) {
+        Ok(0) => {
+          // EOF - PTY 关闭
+          break;
+        }
+        Ok(size) => {
+          buf.resize(size, 0u8);
+          if tx.send_blocking(buf).is_err() {
+            // 接收端关闭
+            break;
+          }
+        }
+        Err(e) => {
+          eprintln!("PTY read error: {}", e);
+          break;
+        }
+      }
+    }
+    Ok(())
+  })
+}
+
+fn run_writer(
+  master: Box<dyn MasterPty + Send>,
+  rx: Receiver<WriteCommand>,
+) -> Result<JoinHandle<Result<()>>> {
+  let mut writer = master
+    .take_writer()
+    .with_context(|| "Failed to get PTY writer")?;
+
+  let write_handle = thread::spawn(move || -> Result<()> {
+    loop {
+      let cmd = rx.recv_blocking()?;
+      match cmd {
+        WriteCommand::Write(data) => {
+          writer.write_all(&data)?;
+          writer.flush()?;
+        }
+        WriteCommand::Resize(size) => {
+          master.resize(size)?;
+        }
+      }
+    }
+    Ok(())
+  });
+
+  Ok(write_handle)
 }

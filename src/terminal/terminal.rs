@@ -117,7 +117,7 @@ pub struct Terminal {
   pub content: TerminalContent,
   /// alacritty 终端状态（使用 Arc<Mutex> 以便在后台任务中访问）
   term: Arc<Mutex<Term>>,
-  pty: Box<dyn Pty>,
+  pty: Arc<dyn Pty>,
   /// 当前显示偏移
   display_offset: usize,
   /// 选区头部位置
@@ -134,7 +134,7 @@ impl Terminal {
   /// # Arguments
   /// * `pty` - PTY 实现
   /// * `cx` - GPUI Context
-  pub fn new(pty: Box<dyn Pty>, cx: &mut Context<Self>) -> Result<Self> {
+  pub fn new(pty: Arc<dyn Pty>, cx: &mut Context<Self>) -> Result<Self> {
     // 创建初始尺寸
     let initial_size = TerminalSize::default_size();
     let term_dimensions = TermDimensions::from(initial_size);
@@ -159,7 +159,7 @@ impl Terminal {
     let entity = cx.entity().clone();
 
     // 启动 PTY 读取器
-    let pty_reader = pty.start_reader();
+    let pty_reader = pty.reader();
 
     let event_term = term.clone();
     cx.spawn(async move |_, cx| -> Result<()> {
@@ -199,7 +199,7 @@ impl Terminal {
     let size = TerminalSize::default_size();
     let pty = LocalPty::new(size, None)?;
 
-    Self::new(Box::new(pty), cx)
+    Self::new(Arc::new(pty), cx)
   }
 
   /// 处理 alacritty 事件（后台任务中调用）
@@ -282,10 +282,11 @@ impl Terminal {
   // }
 
   /// 发送输入数据到终端
-  pub async fn input(&mut self, data: Vec<u8>) -> Result<()> {
+  pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>) {
     self.scroll_to_bottom();
-    // self.set_selection(None);
-    self.pty.write(data.as_slice()).await
+
+    let pty = self.pty.clone();
+    cx.spawn(async move |_, _| pty.write(data).await).detach();
   }
 
   /// 调整终端大小

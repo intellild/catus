@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
@@ -81,7 +82,7 @@ impl TabItem {
 
     // 创建 Terminal Entity
     let terminal_entity =
-      cx.new(|cx| Terminal::new(Box::new(pty), cx).expect("Failed to create terminal"));
+      cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
 
     Ok(Self {
       id: generate_tab_id(),

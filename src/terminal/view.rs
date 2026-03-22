@@ -25,8 +25,9 @@ impl TerminalView {
     cx: &mut Context<Self>,
   ) {
     let data = encode_keystroke(&event.keystroke);
-    self.terminal.update(cx, |terminal, _cx| {
-      let _ = terminal.input(data);
+
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.input(cx, data);
     });
   }
 

@@ -48,7 +48,7 @@ pub trait Pty: Send + Sync {
   ///
   /// # Errors
   /// 如果写入失败则返回错误
-  async fn write(&self, data: &[u8]) -> Result<()>;
+  async fn write(&self, data: Vec<u8>) -> Result<()>;
 
   /// 调整 PTY 大小
   ///
@@ -66,7 +66,7 @@ pub trait Pty: Send + Sync {
   ///
   /// # Returns
   /// 返回一个异步通道接收器，用于接收 PTY 输出的数据
-  fn start_reader(&self) -> Receiver<Vec<u8>>;
+  fn reader(&self) -> Receiver<Vec<u8>>;
 
   /// 关闭 PTY
   ///
@@ -74,7 +74,7 @@ pub trait Pty: Send + Sync {
   ///
   /// # Errors
   /// 如果关闭失败则返回错误
-  fn close(&self) -> Result<()>;
+  async fn close(&mut self) -> Result<()>;
 
   /// 获取进程 ID（本地 PTY 有效）
   ///
