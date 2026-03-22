@@ -9,16 +9,16 @@
 │  ┌─────────────────┐       ┌─────────────────────────────────────┐         │
 │  │   TerminalView  │◄─────►│         Entity<Terminal>            │         │
 │  │   (渲染 + 交互)  │       │  ┌───────────────────────────────┐  │         │
-│  └────────┬────────┘       │  │  content: Entity<TerminalContent>│ │         │
-│           │                │  │  command_tx: mpsc::Sender<...>  │  │         │
-│           │                │  │  content_tx: watch::Sender<...> │  │         │
+│  └────────┬────────┘       │  │  content: TerminalContent     │  │         │
+│           │                │  │  term: Arc<Mutex<Term>>       │  │         │
+│           │                │  │  pty: Arc<dyn Pty>            │  │         │
 │           │                │  └───────────────────────────────┘  │         │
 │           │                └─────────────────┬───────────────────┘         │
 │           │                                  │                             │
-│           │ cx.observe()                     │                             │
+│           │ cx.spawn()                       │                             │
 │           │                                  │                             │
 │  ┌────────▼────────┐       ┌─────────────────▼─────────────────────┐       │
-│  │ TerminalElement │◄─────►│      Entity<TerminalContent>          │       │
+│  │ TerminalElement │◄─────►│      TerminalContent (直接存储)       │       │
 │  │   (paint渲染)   │  read │  ┌───────────────────────────────┐    │       │
 │  └─────────────────┘       │  │  cells, cursor, mode, title   │    │       │
 │                            │  │  selection, bounds, ...       │    │       │
@@ -26,39 +26,30 @@
 │                            └───────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        │
-                                       │ mpsc::channel<TerminalInput>
+                                       │ async_channel
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Background Task (cx.background_spawn)               │
+│                         Background Task (cx.spawn)                          │
 │                                                                             │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                         async闭包                                    │   │
-│   │                                                                     │   │
-│   │   loop {                                                            │   │
-│   │       tokio::select! {                                              │   │
-│   │           Some(input) = input_rx.recv() => {                        │   │
-│   │               match input {                                         │   │
-│   │                   TerminalInput::PtyData(data) => process_data(),   │   │
-│   │                   TerminalInput::Resize(size) => resize_term(),     │   │
-│   │                   TerminalInput::Write(data) => pty.write(),        │   │
-│   │               }                                                     │   │
-│   │           }                                                         │   │
-│   │       }                                                             │   │
-│   │       // 生成新内容                                                 │   │
-│   │       let content = make_content(&term);                            │   │
-│   │       content_tx.send(content);                                     │   │
-│   │   }                                                                 │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────┐                                       │
+│   │     PTY Read Loop               │                                       │
+│   │  ┌─────────────────────────┐    │                                       │
+│   │  │  pty.reader().recv()    │    │                                       │
+│   │  │       │                 │    │                                       │
+│   │  │       ▼                 │    │                                       │
+│   │  │  while let Some(data) { │    │                                       │
+│   │  │    term.lock().advance()│    │                                       │
+│   │  │    cx.notify()          │────┼────► UI 重渲染                        │
+│   │  │  }                      │    │                                       │
+│   │  └─────────────────────────┘    │                                       │
+│   │                                 │                                       │
+│   └─────────────────────────────────┘                                       │
+│                                                                             │
+│   ┌──────────────────────┐  ┌──────────────────┐                           │
+│   │   Arc<Mutex<Term>>   │  │   Arc<dyn Pty>   │                           │
+│   │   (alacritty终端状态) │  │   (pty抽象)       │                           │
+│   └──────────────────────┘  └──────────────────┘                           │
 │                                      │                                      │
-│                    ┌─────────────────┼─────────────────┐                    │
-│                    │                 │                 │                    │
-│                    ▼                 ▼                 ▼                    │
-│   ┌──────────────────────┐  ┌──────────────────┐  ┌──────────────┐         │
-│   │   Arc<FairMutex<Term>>│  │   Box<dyn Pty>   │  │  watch::rx   │         │
-│   │   (alacritty终端状态) │  │   (pty抽象)       │  │  (UI读取)    │         │
-│   └──────────────────────┘  └──────────────────┘  └──────────────┘         │
-│                                     │                                       │
 └─────────────────────────────────────┼───────────────────────────────────────┘
                                       │
                                       ▼
@@ -66,17 +57,22 @@
 │                              Pty 实现层                                      │
 │                                                                             │
 │  ┌─────────────────────────────┐  ┌─────────────────────────────────────┐   │
-│  │       LocalPty              │  │           SshPty                    │   │
+│  │       LocalPty              │  │           SshPty (TODO)             │   │
 │  │  ┌───────────────────────┐  │  │  ┌─────────────────────────────┐    │   │
-│  │  │ portable_pty::PtyPair │  │  │  │ ssh2::Session + Channel     │    │   │
-│  │  │ ├─ master (write TX)  │  │  │  │ ├─ session: Arc<Mutex<>>    │    │   │
-│  │  │ └─ slave              │  │  │  │ └─ channel: Arc<Mutex<>>    │    │   │
-│  │  └───────────────────────┘  │  │  └─────────────────────────────┘    │   │
+│  │  │ portable_pty::PtyPair │  │  │  │  ssh2::Session + Channel    │    │   │
+│  │  │ ├─ master (write TX)  │  │  │  │                             │    │   │
+│  │  │ └─ slave              │  │  │  └─────────────────────────────┘    │   │
+│  │  └───────────────────────┘  │  │                                     │   │
 │  │  ┌───────────────────────┐  │  │  ┌─────────────────────────────┐    │   │
-│  │  │    ReadThread         │  │  │  │       ReadThread            │    │   │
+│  │  │    Reader Thread      │  │  │  │       Reader Thread         │    │   │
 │  │  │  (阻塞读取 + channel)  │  │  │  │   (阻塞读取 + channel)       │    │   │
 │  │  │  handle: JoinHandle   │  │  │  │   handle: JoinHandle        │    │   │
 │  │  └───────────────────────┘  │  │  └─────────────────────────────┘    │   │
+│  │  ┌───────────────────────┐  │  │                                     │   │
+│  │  │    Writer Thread      │  │  │                                     │   │
+│  │  │  (channel 接收写入)    │  │  │                                     │   │
+│  │  │  handle: JoinHandle   │  │  │                                     │   │
+│  │  └───────────────────────┘  │  │                                     │   │
 │  └─────────────────────────────┘  └─────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -85,17 +81,17 @@
 
 ### 2.1 TerminalContent
 
-终端渲染状态，作为独立的 Entity 存在。
+终端渲染状态，直接存储在 Terminal 中（非 Entity）。
 
 ```rust
-/// 终端内容实体 - 纯渲染状态
+/// 终端内容 - 纯渲染状态
 #[derive(Clone)]
 pub struct TerminalContent {
     pub cells: Vec<IndexedCell>,
     pub mode: TermMode,
     pub display_offset: usize,
     pub selection: Option<SelectionRange>,
-    pub cursor: RenderableCursor,
+    pub cursor: CursorState,
     pub cursor_char: char,
     pub terminal_bounds: TerminalBounds,
     pub scrolled_to_top: bool,
@@ -103,52 +99,88 @@ pub struct TerminalContent {
     pub title: String,
 }
 
-impl EventEmitter<TerminalEvent> for TerminalContent {}
+impl TerminalContent {
+    pub fn new() -> Self;
+    pub fn update_from_cells(&mut self, cells: Vec<IndexedCell>, cursor: CursorState, cursor_char: char);
+    pub fn set_title(&mut self, title: String);
+    pub fn set_bounds(&mut self, bounds: TerminalBounds);
+}
 ```
 
-### 2.2 Terminal
+### 2.2 CursorState
 
-终端协调器 Entity，管理后台任务和状态同步。
+可渲染的光标状态。
+
+```rust
+#[derive(Clone, Debug)]
+pub struct CursorState {
+    pub point: TerminalPoint,
+    pub shape: alacritty_terminal::vte::ansi::CursorShape,
+}
+```
+
+### 2.3 Terminal
+
+终端协调器 Entity，管理 PTY 和状态同步。
 
 ```rust
 /// 终端协调器
 pub struct Terminal {
-    /// 内容实体（独立 Entity，可被观察）
-    pub content: Entity<TerminalContent>,
-    
-    /// 向后台任务发送输入
-    pub input_tx: mpsc::Sender<TerminalInput>,
-    
-    /// 从后台任务接收更新
-    pub content_rx: watch::Receiver<TerminalContent>,
-    
-    /// 后台任务句柄（Drop 时自动取消）
-    _task: Task<()>,
+    /// 终端内容（直接存储，非 Entity）
+    pub content: TerminalContent,
+    /// alacritty 终端状态
+    term: Arc<Mutex<Term>>,
+    /// PTY 实现
+    pty: Arc<dyn Pty>,
+    /// 当前显示偏移
+    display_offset: usize,
+    /// 选区头部位置
+    selection_head: Option<TerminalPoint>,
+    /// 终端标题
+    title: String,
+    /// 鼠标模式状态
+    mouse_mode: bool,
 }
 
 impl Terminal {
-    /// 创建新的终端
-    pub fn new(cx: &mut Context<Self>) -> Self;
+    /// 创建新的终端，直接传入 PTY
+    pub fn new(pty: Arc<dyn Pty>, cx: &mut Context<Self>) -> Result<Self>;
     
-    /// 附加 PTY（本地或 SSH）
-    pub fn attach_pty(&mut self, pty: Box<dyn Pty>, cx: &mut Context<Self>);
+    /// 创建仅显示的终端（无 PTY，用于测试）
+    pub fn new_display_only(cx: &mut Context<Self>) -> anyhow::Result<Self>;
     
-    /// 写入输入数据
-    pub fn input(&self, data: Vec<u8>);
+    /// 发送输入数据到终端
+    pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>);
     
     /// 调整终端大小
-    pub fn resize(&self, size: TerminalSize);
+    pub async fn resize(&mut self, size: TerminalSize) -> Result<()>;
     
-    /// 获取当前内容（从 watch channel）
-    pub fn current_content(&self) -> TerminalContent;
+    /// 滚动终端
+    pub fn scroll(&mut self, scroll: alacritty_terminal::grid::Scroll);
+    pub fn scroll_line_up(&mut self);
+    pub fn scroll_line_down(&mut self);
+    pub fn scroll_page_up(&mut self);
+    pub fn scroll_page_down(&mut self);
+    pub fn scroll_to_top(&mut self);
+    pub fn scroll_to_bottom(&mut self);
+    
+    /// 获取当前内容的引用
+    pub fn content(&self) -> &TerminalContent;
+    
+    /// 获取终端标题
+    pub fn title(&self) -> &str;
+    
+    /// 是否滚动到顶部/底部
+    pub fn scrolled_to_top(&self) -> bool;
+    pub fn scrolled_to_bottom(&self) -> bool;
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}
 ```
 
-### 2.3 TerminalInput (输入枚举)
+### 2.4 TerminalInput (输入枚举)
 
-定义所有从 UI 发送到后台的输入类型。
+定义所有从 UI 发送到后台的输入类型（当前定义但未在核心流程中使用）。
 
 ```rust
 /// 终端输入事件（UI → Background）
@@ -170,25 +202,25 @@ pub enum TerminalInput {
 }
 ```
 
-### 2.4 Pty Trait
+### 2.5 Pty Trait
 
 PTY 抽象接口，支持本地和 SSH 两种实现。
 
 ```rust
 /// PTY 抽象
+#[async_trait]
 pub trait Pty: Send + Sync {
-    /// 写入数据（线程安全）
-    fn write(&self, data: &[u8]) -> anyhow::Result<()>;
+    /// 写入数据到 PTY（异步）
+    async fn write(&self, data: Vec<u8>) -> Result<()>;
     
-    /// 调整大小
-    fn resize(&self, size: TerminalSize) -> anyhow::Result<()>;
+    /// 调整 PTY 大小（异步）
+    async fn resize(&self, size: TerminalSize) -> Result<()>;
     
-    /// 启动读取循环，返回数据接收器
-    /// 在内部创建独立线程进行阻塞读取
-    fn start_reader(self: Box<Self>) -> mpsc::Receiver<Vec<u8>>;
+    /// 获取数据接收器（克隆）
+    fn reader(&self) -> Receiver<Vec<u8>>;
     
-    /// 关闭 PTY
-    fn close(&self) -> anyhow::Result<()>;
+    /// 关闭 PTY（异步）
+    async fn close(&mut self) -> Result<()>;
     
     /// 获取进程 ID（本地 PTY 有效）
     fn process_id(&self) -> Option<u32>;
@@ -202,35 +234,58 @@ pub struct TerminalSize {
     pub pixel_width: u16,
     pub pixel_height: u16,
 }
+
+impl TerminalSize {
+    pub fn new(rows: u16, cols: u16, pixel_width: u16, pixel_height: u16) -> Self;
+    pub fn default_size() -> Self;  // 24x80
+}
 ```
 
-### 2.5 LocalPty
+### 2.6 LocalPty
 
 本地 PTY 实现，基于 `portable-pty`。
 
 ```rust
-/// 本地 PTY
+/// 写入命令枚举
+enum WriteCommand {
+    Write(Vec<u8>),
+    Resize(PtySize),
+}
+
+/// 本地 PTY 实现
 pub struct LocalPty {
-    // portable_pty 内部实现
+    process_id: Option<u32>,
+    child: Box<dyn Child + Send + Sync>,
+    reader_handle: JoinHandle<Result<()>>,
+    reader_rx: Receiver<Vec<u8>>,
+    writer_handle: JoinHandle<Result<()>>,
+    writer_tx: Sender<WriteCommand>,
 }
 
 impl LocalPty {
     /// 创建本地 PTY
-    pub fn new(size: TerminalSize, shell: &str) -> anyhow::Result<Self>;
+    pub fn new(size: TerminalSize, command: Option<&str>) -> Result<Self>;
 }
 
+#[async_trait]
 impl Pty for LocalPty {
-    fn write(&self, data: &[u8]) -> anyhow::Result<()>;
-    fn resize(&self, size: TerminalSize) -> anyhow::Result<()>;
-    fn start_reader(self: Box<Self>) -> mpsc::Receiver<Vec<u8>>;
-    fn close(&self) -> anyhow::Result<()>;
+    async fn write(&self, data: Vec<u8>) -> Result<()>;
+    async fn resize(&self, size: TerminalSize) -> Result<()>;
+    fn reader(&self) -> Receiver<Vec<u8>>;
+    async fn close(&mut self) -> Result<()>;
     fn process_id(&self) -> Option<u32>;
+}
+
+impl Drop for LocalPty {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
 }
 ```
 
-### 2.6 SshPty
+### 2.7 SshPty (TODO)
 
-SSH PTY 实现，基于 `ssh2`。
+SSH PTY 实现，基于 `ssh2`（尚未实现）。
 
 ```rust
 /// SSH 认证方式
@@ -255,11 +310,12 @@ impl SshPty {
     ) -> anyhow::Result<Self>;
 }
 
+#[async_trait]
 impl Pty for SshPty {
-    fn write(&self, data: &[u8]) -> anyhow::Result<()>;
-    fn resize(&self, size: TerminalSize) -> anyhow::Result<()>;
-    fn start_reader(self: Box<Self>) -> mpsc::Receiver<Vec<u8>>;
-    fn close(&self) -> anyhow::Result<()>;
+    async fn write(&self, data: Vec<u8>) -> Result<()>;
+    async fn resize(&self, size: TerminalSize) -> Result<()>;
+    fn reader(&self) -> Receiver<Vec<u8>>;
+    async fn close(&mut self) -> Result<()>;
     fn process_id(&self) -> Option<u32>;
 }
 ```
@@ -268,70 +324,26 @@ impl Pty for SshPty {
 
 ```rust
 // Terminal::new 中启动后台任务
-let background_task = cx.background_spawn({
-    let input_rx = input_rx;           // mpsc::Receiver<TerminalInput>
-    let content_tx = content_tx;       // watch::Sender<TerminalContent>
-    let weak_content = content.downgrade();
-    
-    async move {
-        // 初始化 Term（alacritty）
-        let term = Arc::new(FairMutex::new(Term::new(...)));
-        let mut pty: Option<Box<dyn Pty>> = None;
-        let mut pty_reader: Option<mpsc::Receiver<Vec<u8>>> = None;
+let pty_reader = pty.reader();
+
+cx.spawn(async move |_, cx| -> Result<()> {
+    let term = event_term;
+    loop {
+        // 从 PTY 读取数据
+        let data = pty_reader.recv().await?;
+        let term = term.clone();
         
-        loop {
-            tokio::select! {
-                // 1. 处理 UI 输入
-                Some(input) = input_rx.recv() => {
-                    match input {
-                        TerminalInput::AttachPty(new_pty) => {
-                            pty_reader = Some(new_pty.start_reader());
-                            pty = Some(new_pty);
-                        }
-                        TerminalInput::Write(data) => {
-                            if let Some(ref p) = pty {
-                                let _ = p.write(&data);
-                            }
-                        }
-                        TerminalInput::Resize(size) => {
-                            if let Some(ref p) = pty {
-                                let _ = p.resize(size);
-                            }
-                            term.lock().resize(size);
-                        }
-                        TerminalInput::Shutdown => break,
-                        _ => {}
-                    }
-                }
-                
-                // 2. 处理 PTY 输出（如果已附加）
-                Some(data) = async {
-                    match pty_reader {
-                        Some(ref mut rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    // 解析 VTE
-                    let mut parser = Processor::new();
-                    let mut term = term.lock();
-                    parser.advance(&mut *term, &data);
-                    drop(term);
-                    
-                    // 生成新内容
-                    let new_content = make_content(&term);
-                    let _ = content_tx.send(new_content);
-                    
-                    // 通知 Entity 更新
-                    if let Some(entity) = weak_content.upgrade() {
-                        entity.update(cx, |_, cx| {
-                            cx.emit(TerminalEvent::Wakeup);
-                        }).ok();
-                    }
-                }
-            }
-        }
+        // 在后台线程解析 VTE
+        cx.background_spawn(async move {
+            term.clone().lock().await.advance(data);
+        }).await;
+        
+        // 通知 UI 重渲染
+        entity.update(cx, |_, cx| {
+            cx.notify();
+        })?;
     }
-});
+}).detach();
 ```
 
 ## 4. UI 层接口
@@ -342,13 +354,26 @@ let background_task = cx.background_spawn({
 pub struct TerminalView {
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
-    _content_observer: Subscription,
 }
 
 impl TerminalView {
     pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self;
     
     fn handle_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>);
+    fn handle_paste(&mut self, text: &str, cx: &mut Context<Self>);
+    
+    pub fn terminal(&self) -> &Entity<Terminal>;
+    
+    // 滚动方法
+    pub fn scroll_line_up(&mut self, cx: &mut Context<Self>);
+    pub fn scroll_line_down(&mut self, cx: &mut Context<Self>);
+    pub fn scroll_page_up(&mut self, cx: &mut Context<Self>);
+    pub fn scroll_page_down(&mut self, cx: &mut Context<Self>);
+    pub fn scroll_to_top(&mut self, cx: &mut Context<Self>);
+    pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>);
+    
+    pub fn clear(&mut self, cx: &mut Context<Self>);
+    pub fn copy(&mut self, cx: &mut Context<Self>);
 }
 
 impl Render for TerminalView {
@@ -356,7 +381,7 @@ impl Render for TerminalView {
 }
 
 impl Focusable for TerminalView {
-    fn focus_handle(&self, _: &App) -> FocusHandle;
+    fn focus_handle(&self, _cx: &App) -> FocusHandle;
 }
 ```
 
@@ -364,12 +389,40 @@ impl Focusable for TerminalView {
 
 ```rust
 pub struct TerminalElement {
-    content: Entity<TerminalContent>,
+    terminal: Entity<Terminal>,
+    content: TerminalContent,
+    char_width: Pixels,
+    char_height: Pixels,
     focus_handle: FocusHandle,
 }
 
+pub struct LayoutState {
+    bounds: Bounds<Pixels>,
+    content: TerminalContent,
+    char_width: Pixels,
+    char_height: Pixels,
+    background_color: Hsla,
+    cursor_visible: bool,
+}
+
+pub struct BatchedTextRun {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub text: String,
+    pub cell_count: usize,
+    pub fg: [u8; 3],
+    pub bg: [u8; 3],
+    pub bold: bool,
+}
+
 impl TerminalElement {
-    pub fn new(content: Entity<TerminalContent>, focus_handle: FocusHandle) -> Self;
+    pub fn new(terminal: Entity<Terminal>, focus_handle: FocusHandle) -> Self;
+    fn create_font() -> Font;
+    fn calculate_char_dimensions(&mut self, window: &mut Window);
+    fn create_text_run(len: usize, font: &Font, color: Hsla, bold: bool) -> TextRun;
+    fn paint_cell_background(...);
+    fn paint_cursor(...);
+    fn layout_grid(content: &TerminalContent) -> Vec<BatchedTextRun>;
 }
 
 impl Element for TerminalElement {
@@ -393,49 +446,40 @@ impl Element for TerminalElement {
 TerminalView::handle_key_down()
     │
     ▼
-terminal.input(data) → input_tx.send(TerminalInput::Write(data))
+terminal.input(cx, data)
     │
     ▼
-[跨线程]
+pty.write(data).await  // 异步写入
     │
     ▼
-后台任务 select! 收到 TerminalInput::Write
+Writer Thread (via channel)
     │
     ▼
-pty.write(data)  // 直接写入
+PTY Master
 ```
 
 ### 5.2 终端输出
 
 ```
-PTY 有输出
+PTY Master 有输出
     │
     ▼
-Pty::start_reader() 内部线程
+Reader Thread (阻塞读取)
     │
     ▼
-阻塞读取 → reader_tx.send(data)
+reader_tx.send(data)
     │
     ▼
-[跨线程]
+cx.spawn 任务 recv()
     │
     ▼
-后台任务 select! 收到 TerminalInput::PtyData
+term.lock().advance(data)  // 解析 VTE
     │
     ▼
-parser.advance(&mut term, data)
+cx.notify()  // 通知 UI
     │
     ▼
-content_tx.send(new_content)
-    │
-    ▼
-TerminalContent Entity 被更新
-    │
-    ▼
-cx.emit(TerminalEvent::Wakeup)
-    │
-    ▼
-UI 重渲染
+UI 重渲染 (TerminalElement::paint)
 ```
 
 ## 6. 文件结构
@@ -444,16 +488,12 @@ UI 重渲染
 src/terminal/
 ├── mod.rs              # 模块导出
 ├── terminal.rs         # Terminal 结构体（Entity + 协调器）
-├── content.rs          # TerminalContent（Entity 状态）
+├── content.rs          # TerminalContent（渲染状态）
 ├── input.rs            # TerminalInput 枚举
 ├── pty.rs              # Pty trait + TerminalSize
 ├── local_pty.rs        # LocalPty 实现
-├── ssh_pty.rs          # SshPty 实现
 ├── view.rs             # TerminalView
-├── element.rs          # TerminalElement
-└── mappings/
-    ├── keys.rs         # 按键映射
-    └── colors.rs       # 颜色映射
+├── terminal_element.rs # TerminalElement
 ```
 
 ## 7. 使用示例
@@ -461,23 +501,22 @@ src/terminal/
 ### 7.1 创建本地终端
 
 ```rust
-let terminal = cx.new(|cx| Terminal::new(cx));
+use crate::terminal::{LocalPty, Terminal, TerminalSize};
 
-terminal.update(cx, |term, cx| {
-    let pty = LocalPty::new(
-        TerminalSize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 },
-        "/bin/bash",
-    ).unwrap();
-    
-    term.attach_pty(Box::new(pty), cx);
-});
+let size = TerminalSize::default_size();
+let pty = Arc::new(LocalPty::new(size, Some("/bin/bash")).unwrap());
+let terminal = cx.new(|cx| Terminal::new(pty, cx).unwrap());
 ```
 
-### 7.2 创建 SSH 终端
+### 7.2 创建仅显示终端（测试用）
 
 ```rust
-let terminal = cx.new(|cx| Terminal::new(cx));
+let terminal = cx.new(|cx| Terminal::new_display_only(cx).unwrap());
+```
 
+### 7.3 创建 SSH 终端 (TODO)
+
+```rust
 // 在后台创建 SSH 连接
 cx.spawn(async move |this, cx| {
     let pty = cx.background_spawn(async move {
@@ -485,41 +524,32 @@ cx.spawn(async move |this, cx| {
     }).await?;
     
     this.update(cx, |term, cx| {
-        term.attach_pty(Box::new(pty), cx);
+        term.attach_pty(Arc::new(pty), cx);
     })?;
     
     Ok(())
 }).detach();
 ```
 
-### 7.3 观察内容变化
-
-```rust
-// 在 TerminalView 中
-let _observer = cx.observe(&terminal.read(cx).content, |this, _, cx| {
-    cx.notify(); // TerminalContent 变化时重渲染
-});
-```
-
 ## 8. 设计要点
 
-1. **TerminalContent 是独立 Entity**
-   - 可被单独观察，解耦渲染和数据更新
-   - watch channel 保证总能获取最新值
+1. **TerminalContent 直接存储**
+   - 非 Entity，直接存储在 Terminal 中
+   - 通过 `cx.notify()` 触发重渲染
 
-2. **Terminal 作为协调器**
-   - 管理后台任务生命周期
-   - 持有 input_tx 供外部发送命令
-   - 持有 content_rx 供读取最新内容
+2. **Pty 使用 Arc 包装**
+   - 支持多线程共享
+   - 使用 `async_trait` 定义异步方法
 
-3. **TerminalInput 统一输入**
-   - 枚举类型包含所有可能的输入来源
-   - 单通道简化后台任务处理
+3. **LocalPty 双线程设计**
+   - Reader Thread: 阻塞读取 PTY 输出
+   - Writer Thread: 通过 channel 接收写入命令
+   - 支持写入和 resize 操作
 
-4. **Pty::start_reader() 模式**
-   - PTY 各自管理读取线程
-   - 通过 mpsc channel 将读取结果汇入 TerminalInput::PtyData
+4. **VTE 解析在后台执行**
+   - 使用 `cx.background_spawn` 在后台线程执行
+   - 避免阻塞 UI 线程
 
-5. **write 直接调用**
-   - portable-pty 和 ssh2 的 write 都是线程安全的
-   - 无需通过 channel 转发，减少延迟
+5. **文本批处理渲染**
+   - `BatchedTextRun` 合并相同样式的文本
+   - 减少 draw call，提高渲染性能
