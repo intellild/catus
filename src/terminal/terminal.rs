@@ -74,17 +74,17 @@ enum InternalEvent {
 
 /// 终端事件监听器 - 使用 mpsc channel 转发 alacritty 事件到后台任务
 #[derive(Clone)]
-struct ChannelEventListener(Sender<alacritty_terminal::event::Event>);
+struct EventProxy(Sender<alacritty_terminal::event::Event>);
 
-impl EventListener for ChannelEventListener {
+impl EventListener for EventProxy {
   fn send_event(&self, event: alacritty_terminal::event::Event) {
     // 使用 ok() 忽略发送失败（接收端已关闭的情况）
-    let _ = self.0.send(event);
+    let _ = self.0.send_blocking(event);
   }
 }
 
 struct Term {
-  term: alacritty_terminal::Term<ChannelEventListener>,
+  term: alacritty_terminal::Term<EventProxy>,
   parser: Processor<alacritty_terminal::vte::ansi::StdSyncHandler>,
 }
 
@@ -92,7 +92,7 @@ impl Term {
   pub fn new<D: Dimensions>(
     config: alacritty_terminal::term::Config,
     dimensions: &D,
-    event_proxy: ChannelEventListener,
+    event_proxy: EventProxy,
   ) -> Self {
     Self {
       term: alacritty_terminal::Term::new(config, dimensions, event_proxy),
@@ -114,7 +114,7 @@ impl Term {
 /// 4. 生成可渲染的 TerminalContent
 pub struct Terminal {
   /// 终端内容（直接存储，非 Entity）
-  pub content: TerminalContent,
+  content: TerminalContent,
   /// alacritty 终端状态（使用 Arc<Mutex> 以便在后台任务中访问）
   term: Arc<Mutex<Term>>,
   pty: Arc<dyn Pty>,
@@ -146,13 +146,12 @@ impl Terminal {
     };
 
     // 创建事件通道（alacritty → Terminal）
-    let (events_tx, mut events_rx) = unbounded::<alacritty_terminal::event::Event>();
+    let (events_tx, events_rx) = unbounded::<alacritty_terminal::event::Event>();
 
-    let parser = Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new();
     let term = Arc::new(Mutex::new(Term::new(
       term_config,
       &term_dimensions,
-      ChannelEventListener(events_tx),
+      EventProxy(events_tx),
     )));
 
     // 获取实体句柄（用于后台任务更新内容）
@@ -174,6 +173,34 @@ impl Terminal {
 
         entity.update(cx, |_, cx| {
           cx.notify();
+          cx.emit(TerminalEvent::Wakeup);
+        })?;
+      }
+    })
+    .detach();
+
+    cx.spawn(async move |entity, cx| -> Result<()> {
+      use alacritty_terminal::event::Event;
+      loop {
+        let event = events_rx.recv().await?;
+
+        entity.update(cx, |terminal, cx| {
+          match event {
+            Event::Title(title) => {
+              terminal.title = title.clone();
+              cx.emit(TerminalEvent::TitleChanged(title));
+            }
+            Event::Wakeup => {
+              cx.notify();
+            }
+            Event::Bell => {
+              cx.emit(TerminalEvent::Bell);
+            }
+            Event::Exit | Event::ChildExit(_) => {
+              cx.emit(TerminalEvent::Closed);
+            }
+            _ => {}
+          }
         })?;
       }
     })
@@ -201,85 +228,6 @@ impl Terminal {
 
     Self::new(Arc::new(pty), cx)
   }
-
-  /// 处理 alacritty 事件（后台任务中调用）
-  async fn process_alacritty_event(event: &alacritty_terminal::event::Event) {
-    use alacritty_terminal::event::Event;
-
-    match event {
-      Event::Title(_title) => {
-        // TODO update title
-      }
-      Event::Wakeup => {
-        // TODO sync
-      }
-      Event::Bell => {
-        // TODO bell
-      }
-      Event::Exit => {
-        // TODO exit
-      }
-      _ => {}
-    }
-  }
-
-  /// 从 Term 生成 TerminalContent（后台任务中调用）
-  // async fn make_content_sync(
-  //   term: &Arc<async_lock::Mutex<Term<ChannelEventListener>>>,
-  // ) -> TerminalContent {
-  //   let term_guard = term.lock().await;
-  //   let content = term_guard.renderable_content();
-  //
-  //   let estimated_size = content.display_iter.size_hint().0;
-  //   let mut cells = Vec::with_capacity(estimated_size);
-  //
-  //   for indexed in content.display_iter {
-  //     cells.push(IndexedCell {
-  //       point: TerminalPoint {
-  //         line: indexed.point.line,
-  //         column: indexed.point.column,
-  //       },
-  //       cell: indexed.cell.clone(),
-  //     });
-  //   }
-  //
-  //   let cursor_char = term_guard.grid()[content.cursor.point].c;
-  //
-  //   let selection = content
-  //     .selection
-  //     .map(|range| crate::terminal::content::SelectionRange {
-  //       start: TerminalPoint {
-  //         line: range.start.line,
-  //         column: range.start.column,
-  //       },
-  //       end: TerminalPoint {
-  //         line: range.end.line,
-  //         column: range.end.column,
-  //       },
-  //     });
-  //
-  //   let scrolled_to_top = content.display_offset == term_guard.history_size();
-  //   let scrolled_to_bottom = content.display_offset == 0;
-  //
-  //   TerminalContent {
-  //     cells,
-  //     mode: content.mode,
-  //     display_offset: content.display_offset,
-  //     selection,
-  //     cursor: renderable_cursor_to_state(&content.cursor),
-  //     cursor_char,
-  //     terminal_bounds: TerminalBounds::new(
-  //       px(8.0),
-  //       px(16.0),
-  //       Bounds::default(),
-  //       term_guard.screen_lines(),
-  //       term_guard.columns(),
-  //     ),
-  //     scrolled_to_top,
-  //     scrolled_to_bottom,
-  //     title: "Terminal".to_string(),
-  //   }
-  // }
 
   /// 发送输入数据到终端
   pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>) {

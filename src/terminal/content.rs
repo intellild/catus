@@ -12,6 +12,8 @@ pub enum TerminalEvent {
   Wakeup,
   /// 标题变化
   TitleChanged(String),
+  /// 终端铃声
+  Bell,
   /// 关闭终端
   Closed,
 }
@@ -164,8 +166,6 @@ impl Default for TerminalContent {
     Self::new()
   }
 }
-
-impl EventEmitter<TerminalEvent> for TerminalContent {}
 
 /// 将 alacritty 的 RenderableCursor 转换为 CursorState
 pub fn renderable_cursor_to_state(cursor: &RenderableCursor) -> CursorState {
