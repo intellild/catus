@@ -4,6 +4,7 @@ use gpui_component::Root;
 mod app;
 mod main_view;
 mod terminal;
+mod title_bar;
 mod workspace;
 
 use app::App as CatusApp;
@@ -32,7 +33,7 @@ fn main() {
       |window, cx| {
         cx.activate(true);
 
-        let view = cx.new(|_| MainView::new(workspace));
+        let view = cx.new(|cx| MainView::new(workspace, cx));
         cx.new(|cx| Root::new(view, window, cx))
       },
     )
