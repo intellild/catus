@@ -73,10 +73,6 @@ impl LocalPty {
 
     let master = pty_pair.master;
 
-    // 获取 writer 和 reader
-    let writer = master
-      .take_writer()
-      .with_context(|| "Failed to get PTY writer")?;
     let reader = master
       .try_clone_reader()
       .with_context(|| "Failed to get PTY reader")?;

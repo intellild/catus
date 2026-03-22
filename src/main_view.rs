@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use gpui::*;
 
 use crate::terminal::TerminalView;
@@ -10,8 +8,8 @@ use crate::workspace::{TabId, TabType, Workspace};
 pub struct MainView {
   workspace: Entity<Workspace>,
   title_bar: Entity<TitleBarRoot>,
-  /// Cache terminal views by tab ID so they aren't recreated on every render
-  terminal_views: HashMap<TabId, Entity<TerminalView>>,
+  /// Cache the current active terminal view
+  current_terminal_view: Option<(TabId, Entity<TerminalView>)>,
 }
 
 impl MainView {
@@ -22,7 +20,7 @@ impl MainView {
     Self {
       workspace,
       title_bar,
-      terminal_views: HashMap::new(),
+      current_terminal_view: None,
     }
   }
 
@@ -36,12 +34,15 @@ impl MainView {
     if let Some(tab) = active_tab {
       match &tab.tab_type {
         TabType::Terminal(terminal) => {
-          // Reuse existing TerminalView or create one
-          let terminal_view = self
-            .terminal_views
-            .entry(tab.id)
-            .or_insert_with(|| cx.new(|cx| TerminalView::new(terminal.clone(), cx)))
-            .clone();
+          // Reuse existing TerminalView if it's for the same tab, otherwise create new one
+          let terminal_view = match &self.current_terminal_view {
+            Some((id, view)) if *id == tab.id => view.clone(),
+            _ => {
+              let view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
+              self.current_terminal_view = Some((tab.id, view.clone()));
+              view
+            }
+          };
 
           // Ensure the terminal view is focused so it receives key events
           terminal_view.focus_handle(cx).focus(window);
@@ -80,10 +81,16 @@ impl MainView {
 
 impl Render for MainView {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // Clean up terminal views for closed tabs
-    let tab_ids: std::collections::HashSet<TabId> =
-      self.workspace.read(cx).tabs.iter().map(|t| t.id).collect();
-    self.terminal_views.retain(|id, _| tab_ids.contains(id));
+    // Clear terminal view if the active tab has changed to a non-terminal tab
+    if let Some((id, _)) = &self.current_terminal_view {
+      if let Some(active_tab) = self.workspace.read(cx).active_tab() {
+        if active_tab.id != *id {
+          self.current_terminal_view = None;
+        }
+      } else {
+        self.current_terminal_view = None;
+      }
+    }
 
     div()
       .flex()

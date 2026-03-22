@@ -56,10 +56,12 @@ impl TitleBarTabs {
 impl Render for TitleBarTabs {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let workspace = self.workspace.read(cx);
-    let tabs = workspace.tabs.clone();
+    let tabs = &workspace.tabs;
     let active_index = workspace.active_index().unwrap_or(0);
 
     div()
+      .flex()
+      .items_center()
       .child(
         TabBar::new("tab-bar")
           .with_variant(TabVariant::Tab)
