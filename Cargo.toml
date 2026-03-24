@@ -16,3 +16,4 @@ gpui-component-assets = "0.5.1"
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1.89"
+tracing = "0.1"

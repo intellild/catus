@@ -1,4 +1,4 @@
-use crate::terminal::content::{ansi_color_to_rgb, rgb_to_hsla, TerminalContent};
+use crate::terminal::content::{TerminalContent, ansi_color_to_rgb, rgb_to_hsla};
 use crate::terminal::terminal::Terminal;
 use alacritty_terminal::term::cell::Flags;
 use gpui::*;

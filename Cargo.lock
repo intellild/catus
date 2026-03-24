@@ -754,6 +754,7 @@ dependencies = [
  "gpui-component-assets",
  "portable-pty",
  "serde",
+ "tracing",
 ]
 
 [[package]]
