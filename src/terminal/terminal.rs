@@ -4,7 +4,7 @@ use crate::terminal::content::{
 use crate::terminal::pty::{Pty, TerminalSize};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::term::{Config, RenderableCursor};
+use alacritty_terminal::term::{Config, RenderableCursor, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use async_channel::{Sender, unbounded};
 use async_lock::Mutex;
@@ -107,49 +107,86 @@ impl Term {
   pub fn advance(&mut self, data: Vec<u8>) {
     self.parser.advance(&mut self.term, &data)
   }
+
+  pub fn extract(&self) -> ExtractedTerminalData {
+    let content = self.term.renderable_content();
+    let mut cells = Vec::new();
+    for indexed in content.display_iter {
+      cells.push(IndexedCell {
+        point: TerminalPoint {
+          line: indexed.point.line,
+          column: indexed.point.column,
+        },
+        cell: indexed.cell.clone(),
+      });
+    }
+    let cursor = content.cursor;
+    let cursor_state = renderable_cursor_to_state(cursor);
+    let cursor_char = cells
+      .iter()
+      .find(|cell| cell.point.line == cursor.point.line && cell.point.column == cursor.point.column)
+      .map(|cell| cell.cell.c)
+      .unwrap_or(' ');
+    ExtractedTerminalData {
+      cells,
+      cursor_state,
+      cursor_char,
+      mode: content.mode,
+      display_offset: content.display_offset,
+    }
+  }
 }
 
-/// 终端协调器 - 参考 Zed 的实现
+struct ExtractedTerminalData {
+  cells: Vec<IndexedCell>,
+  cursor_state: CursorState,
+  cursor_char: char,
+  mode: TermMode,
+  display_offset: usize,
+}
+
+/// 终端协调器
 ///
-/// Terminal 是 GPUI Entity，负责：
-/// 1. 管理 alacritty Term 状态
-/// 2. 处理内部事件队列
-/// 3. 与后台 PTY 任务通信
-/// 4. 生成可渲染的 TerminalContent
+/// ## 数据流设计
+///
+/// 采用「生产-消费」分离模式，按需同步 alacritty 内部状态到可渲染的 TerminalContent：
+///
+/// ```text
+/// PTY 数据到达
+///   → background_spawn: term.lock().advance(data)   ← 只做 VTE 解析
+///   → entity.update: cx.notify()                     ← 只发信号，不提取数据
+///   → GPUI 帧循环触发 TerminalElement::prepaint()
+///     → terminal.refresh_content(cx)
+///       → term.lock().extract()                      ← 开锁提取渲染数据
+///       → apply_extracted_data()
+///     → 读取 content → paint
+/// ```
+///
+/// 这个设计的优势：
+/// - **按需同步**：只有被渲染的 Tab 才执行 extract，后台 Tab 白白保持 alacritty 状态但不消耗 extract 的 CPU
+/// - **帧级合并**：一帧内无论收到多少 PTY 数据块，prepaint 只 extract 一次
+/// - **职责分离**：PTY reader 管"生产"（advance），prepaint 管"消费"（extract + paint）
 pub struct Terminal {
-  /// 终端内容（直接存储，非 Entity）
   content: TerminalContent,
-  /// alacritty 终端状态（使用 Arc<Mutex> 以便在后台任务中访问）
   term: Arc<Mutex<Term>>,
   pty: Arc<dyn Pty>,
-  /// 当前显示偏移
   display_offset: usize,
-  /// 选区头部位置
   selection_head: Option<TerminalPoint>,
-  /// 终端标题
   title: String,
-  /// 鼠标模式状态
   mouse_mode: bool,
 }
 
 impl Terminal {
-  /// 创建新的终端，直接传入 PTY
-  ///
-  /// # Arguments
-  /// * `pty` - PTY 实现
-  /// * `cx` - GPUI Context
+  /// 创建新的终端
   pub fn new(pty: Arc<dyn Pty>, cx: &mut Context<Self>) -> Result<Self> {
-    // 创建初始尺寸
     let initial_size = TerminalSize::default_size();
     let term_dimensions = TermDimensions::from(initial_size);
 
-    // 创建终端配置
     let term_config = Config {
       scrolling_history: DEFAULT_SCROLL_HISTORY_LINES,
       ..Config::default()
     };
 
-    // 创建事件通道（alacritty → Terminal）
     let (events_tx, events_rx) = unbounded::<alacritty_terminal::event::Event>();
 
     let term = Arc::new(Mutex::new(Term::new(
@@ -158,12 +195,12 @@ impl Terminal {
       EventProxy(events_tx),
     )));
 
-    // 获取实体句柄（用于后台任务更新内容）
     let entity = cx.entity().clone();
-
-    // 启动 PTY 读取器
     let pty_reader = pty.reader();
 
+    // PTY 读取任务：「生产」侧
+    // 从 PTY 获取原始数据 → VTE 解析写入 alacritty Term → notify UI 线程
+    // 这里不提取渲染数据，提取放在 prepaint 阶段按需执行
     let event_term = term.clone();
     cx.spawn(async move |_, cx| -> Result<()> {
       let term = event_term;
@@ -171,18 +208,17 @@ impl Terminal {
         let data = pty_reader.recv().await?;
         let term = term.clone();
         cx.background_spawn(async move {
-          term.clone().lock().await.advance(data);
+          term.lock().await.advance(data);
         })
         .await;
 
-        entity.update(cx, |_, cx| {
-          cx.notify();
-          cx.emit(TerminalEvent::Wakeup);
-        })?;
+        entity.update(cx, |_, cx| cx.notify())?;
       }
     })
     .detach();
 
+    // alacritty 事件处理
+    // 处理标题变更、响铃、退出等异步事件
     cx.spawn(async move |entity, cx| -> Result<()> {
       use alacritty_terminal::event::Event;
       loop {
@@ -196,10 +232,7 @@ impl Terminal {
             })?;
           }
           Event::Wakeup => {
-            // 刷新内容并通知UI
-            entity.update(cx, |terminal, cx| {
-              terminal.refresh_content(cx);
-            })?;
+            entity.update(cx, |_, cx| cx.notify())?;
           }
           Event::Bell => {
             entity.update(cx, |_, cx| {
@@ -314,57 +347,22 @@ impl Terminal {
     self.content.scrolled_to_bottom
   }
 
-  /// 从 alacritty Term 刷新内容到 TerminalContent
+  /// 从 alacritty Term 提取最新内容并更新到 TerminalContent
   ///
-  /// 这个方法最小化 Mutex 锁持有时间：
-  /// 1. 获取锁
-  /// 2. 提取所有需要的渲染数据
-  /// 3. 立即释放锁
-  /// 4. 将数据转换并更新 content
+  /// 在 prepaint 阶段调用，确保渲染前数据是最新的。
+  /// 注意：这里不调用 cx.notify()，因为 prepaint 本身就在帧循环中，
+  /// 调用方（PTY reader / Event Wakeup）已经触发过 notify。
   pub fn refresh_content(&mut self, cx: &mut Context<Self>) {
-    // 使用 block 获取异步锁
-    let term_guard = cx.background_executor().block(self.term.lock());
-    let term = &term_guard.term;
-    let renderable_content = term.renderable_content();
+    let extracted = cx.background_executor().block(self.term.lock()).extract();
+    self.apply_extracted_data(extracted);
+  }
 
-    // 提取单元格数据
-    let mut cells = Vec::new();
-    for indexed in renderable_content.display_iter {
-      cells.push(IndexedCell {
-        point: TerminalPoint {
-          line: indexed.point.line,
-          column: indexed.point.column,
-        },
-        cell: indexed.cell.clone(),
-      });
-    }
-
-    // 提取光标状态
-    let cursor = &renderable_content.cursor;
-    let cursor_state = renderable_cursor_to_state(*cursor);
-
-    // 从display_iter中找到光标位置的字符
-    let cursor_char = cells
-      .iter()
-      .find(|cell| cell.point.line == cursor.point.line && cell.point.column == cursor.point.column)
-      .map(|cell| cell.cell.c)
-      .unwrap_or(' ');
-
-    let mode = renderable_content.mode;
-    let display_offset = renderable_content.display_offset;
-
-    // 释放锁（guard在这里drop）
-    drop(term_guard);
-
-    // 更新 content（此时不需要持有锁）
-    self.content.cells = cells;
-    self.content.cursor = cursor_state;
-    self.content.cursor_char = cursor_char;
-    self.content.mode = mode;
-    self.content.display_offset = display_offset;
-
-    // 触发重绘
-    cx.notify();
+  fn apply_extracted_data(&mut self, data: ExtractedTerminalData) {
+    self.content.cells = data.cells;
+    self.content.cursor = data.cursor_state;
+    self.content.cursor_char = data.cursor_char;
+    self.content.mode = data.mode;
+    self.content.display_offset = data.display_offset;
   }
 }
 

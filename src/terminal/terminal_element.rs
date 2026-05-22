@@ -49,7 +49,10 @@ impl BatchedTextRun {
   }
 }
 
-/// 自定义 Terminal Element，使用 paint 方式渲染终端内容
+/// 终端渲染元素
+///
+/// 数据流的「消费」侧：prepaint 阶段调用 Terminal::refresh_content()
+/// 从 alacritty Term 提取最新内容，然后 paint 阶段绘制。
 pub struct TerminalElement {
   terminal: Entity<Terminal>,
   content: TerminalContent,
@@ -296,7 +299,10 @@ impl Element for TerminalElement {
   ) -> Self::PrepaintState {
     self.calculate_char_dimensions(window);
 
-    // 从 Terminal 实体获取最新内容
+    // 「消费」：渲染前从 alacritty Term 同步最新内容到 TerminalContent
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.refresh_content(cx);
+    });
     let content = self.terminal.read(cx).content().clone();
     self.content = content.clone();
 
