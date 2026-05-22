@@ -299,8 +299,8 @@ impl Element for TerminalElement {
   ) -> Self::PrepaintState {
     self.calculate_char_dimensions(window);
 
-    // 「消费」：渲染前从 alacritty Term 同步最新内容到 TerminalContent
     self.terminal.update(cx, |terminal, cx| {
+      terminal.sync_size(bounds, self.char_width, self.char_height, cx);
       terminal.refresh_content(cx);
     });
     let content = self.terminal.read(cx).content().clone();

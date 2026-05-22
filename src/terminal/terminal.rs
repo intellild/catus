@@ -108,6 +108,17 @@ impl Term {
     self.parser.advance(&mut self.term, &data)
   }
 
+  pub fn resize(&mut self, dimensions: &TermDimensions) {
+    self.term.resize(*dimensions);
+  }
+
+  pub fn dimensions(&self) -> TermDimensions {
+    TermDimensions {
+      columns: self.term.columns() as usize,
+      screen_lines: self.term.screen_lines() as usize,
+    }
+  }
+
   pub fn extract(&self) -> ExtractedTerminalData {
     let content = self.term.renderable_content();
     let mut cells = Vec::new();
@@ -170,6 +181,7 @@ pub struct Terminal {
   content: TerminalContent,
   term: Arc<Mutex<Term>>,
   pty: Arc<dyn Pty>,
+  terminal_size: Option<TerminalSize>,
   display_offset: usize,
   selection_head: Option<TerminalPoint>,
   title: String,
@@ -256,6 +268,7 @@ impl Terminal {
       content,
       term,
       pty,
+      terminal_size: None,
       display_offset: 0,
       selection_head: None,
       title: "Terminal".to_string(),
@@ -281,9 +294,41 @@ impl Terminal {
     cx.spawn(async move |_, _| pty.write(data).await).detach();
   }
 
-  /// 调整终端大小
-  pub async fn resize(&mut self, size: TerminalSize) -> Result<()> {
-    self.pty.resize(size).await
+  /// 根据视图实际尺寸同步终端行列数
+  ///
+  /// 首次调用时（terminal_size 为 None）使用视图的实际尺寸替代默认的 24x80，
+  /// 后续调用仅在尺寸变化时才 resize alacritty Term 和 PTY。
+  pub fn sync_size(
+    &mut self,
+    bounds: Bounds<Pixels>,
+    char_width: Pixels,
+    char_height: Pixels,
+    cx: &mut Context<Self>,
+  ) {
+    let height: f32 = bounds.size.height.into();
+    let char_h: f32 = char_height.into();
+    let rows = ((height / char_h).floor() as u16).max(1);
+    let width: f32 = bounds.size.width.into();
+    let char_w: f32 = char_width.into();
+    let cols = ((width / char_w).floor() as u16).max(1);
+    let new_size = TerminalSize::new(rows, cols, 0, 0);
+
+    if self.terminal_size == Some(new_size) {
+      return;
+    }
+
+    self.terminal_size = Some(new_size);
+
+    let dimensions = TermDimensions::from(new_size);
+    cx.background_executor()
+      .block(self.term.lock())
+      .resize(&dimensions);
+
+    let pty = self.pty.clone();
+    cx.spawn(async move |_, _| {
+      let _ = pty.resize(new_size).await;
+    })
+    .detach();
   }
 
   /// 滚动终端

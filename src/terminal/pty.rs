@@ -3,7 +3,7 @@ use async_channel::Receiver;
 use async_trait::async_trait;
 
 /// 终端尺寸
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalSize {
   pub rows: u16,
   pub cols: u16,
