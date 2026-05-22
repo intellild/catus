@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui::{AppContext, Entity, SharedString};
+use gpui::{AppContext, Entity};
 use gpui_component::IconName;
 
 use crate::id::ID;
@@ -25,16 +25,12 @@ pub enum TabType {
 
 #[derive(Clone)]
 pub struct TabState {
-  pub title: SharedString,
   pub icon: IconName,
 }
 
 impl TabState {
-  pub fn new(title: impl Into<SharedString>, icon: IconName) -> Self {
-    Self {
-      title: title.into(),
-      icon,
-    }
+  pub fn new(icon: IconName) -> Self {
+    Self { icon }
   }
 }
 
@@ -46,13 +42,8 @@ pub struct TabItem {
 }
 
 impl TabItem {
-  pub fn new(
-    cx: &mut gpui::Context<Workspace>,
-    title: impl Into<SharedString>,
-    icon: IconName,
-    tab_type: TabType,
-  ) -> Self {
-    let state = cx.new(|_cx| TabState::new(title, icon));
+  pub fn new(cx: &mut gpui::Context<Workspace>, icon: IconName, tab_type: TabType) -> Self {
+    let state = cx.new(|_cx| TabState::new(icon));
 
     Self {
       id: generate_tab_id(),
@@ -64,7 +55,7 @@ impl TabItem {
   pub fn new_terminal(cx: &mut gpui::Context<Workspace>, terminal_id: ID<Terminal>) -> Self {
     Self {
       id: generate_tab_id(),
-      state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
+      state: cx.new(|_cx| TabState::new(IconName::File)),
       tab_type: TabType::Terminal(terminal_id),
     }
   }
@@ -72,7 +63,7 @@ impl TabItem {
   pub fn new_sftp(cx: &mut gpui::Context<Workspace>) -> Self {
     Self {
       id: generate_tab_id(),
-      state: cx.new(|_cx| TabState::new("SFTP", IconName::Folder)),
+      state: cx.new(|_cx| TabState::new(IconName::Folder)),
       tab_type: TabType::Sftp,
     }
   }

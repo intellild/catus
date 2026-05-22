@@ -1,4 +1,4 @@
-use crate::workspace::Workspace;
+use crate::workspace::{TabType, Workspace};
 use gpui::*;
 use gpui_component::button::Button;
 use gpui_component::notification::Notification;
@@ -71,9 +71,15 @@ impl Render for TitleBarTabs {
           }))
           .children(tabs.iter().enumerate().map(|(ix, tab)| {
             let state = tab.state.read(cx);
-
             let tab_icon = state.icon.clone();
-            let title = state.title.clone();
+
+            let title: SharedString = match &tab.tab_type {
+              TabType::Terminal(terminal_id) => workspace
+                .terminal(*terminal_id)
+                .map(|t| t.read(cx).title().to_string().into())
+                .unwrap_or_else(|| "Terminal".into()),
+              TabType::Sftp => "SFTP".into(),
+            };
 
             Tab::new().label(title).icon(tab_icon).suffix(
               div()
