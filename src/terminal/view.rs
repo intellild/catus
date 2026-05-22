@@ -2,6 +2,8 @@ use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 
+actions!(terminal, [Tab, TabPrev]);
+
 /// Terminal view component using GPUI
 pub struct TerminalView {
   terminal: Entity<Terminal>,
@@ -15,6 +17,18 @@ impl TerminalView {
       terminal,
       focus_handle: cx.focus_handle(),
     }
+  }
+
+  fn on_action_tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.input(cx, vec![b'\t']);
+    });
+  }
+
+  fn on_action_tab_prev(&mut self, _: &TabPrev, _: &mut Window, cx: &mut Context<Self>) {
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.input(cx, vec![0x1b, b'[', b'Z']);
+    });
   }
 
   /// 处理按键事件
@@ -104,6 +118,7 @@ impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     div()
       .id("terminal-view")
+      .key_context("Terminal")
       .size_full()
       .bg(gpui::rgb(0x1e1e1e))
       .cursor_text()
@@ -111,6 +126,8 @@ impl Render for TerminalView {
         self.terminal.clone(),
         self.focus_handle.clone(),
       ))
+      .on_action(cx.listener(Self::on_action_tab))
+      .on_action(cx.listener(Self::on_action_tab_prev))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))
@@ -126,60 +143,237 @@ impl Focusable for TerminalView {
 
 /// 将 GPUI Keystroke 编码为字节序列
 fn encode_keystroke(keystroke: &Keystroke) -> Vec<u8> {
-  let key = keystroke.key.as_str();
   let modifiers = &keystroke.modifiers;
+  let key = keystroke.key.as_str();
 
-  // 处理 Ctrl 修饰符
-  if modifiers.control && key.len() == 1 {
-    let ch = key.chars().next().unwrap_or('\0');
-    if ch.is_ascii_alphabetic() {
-      return vec![ch.to_ascii_lowercase() as u8 - b'a' + 1]; // Ctrl+A = 0x01
+  if modifiers.control && !modifiers.alt && !modifiers.shift {
+    if let Some(ctrl_byte) = encode_ctrl_key(key) {
+      return ctrl_byte;
     }
   }
 
-  // 功能键和特殊键使用 key 字段
-  match key {
-    "enter" | "return" => return vec![b'\r'],
-    "escape" | "esc" => return vec![0x1b],
-    "tab" => return vec![b'\t'],
-    "backspace" => return vec![0x7f],
-    "delete" | "del" => return vec![0x1b, b'[', b'3', b'~'],
-    "insert" | "ins" => return vec![0x1b, b'[', b'2', b'~'],
-    "up" => return vec![0x1b, b'[', b'A'],
-    "down" => return vec![0x1b, b'[', b'B'],
-    "right" => return vec![0x1b, b'[', b'C'],
-    "left" => return vec![0x1b, b'[', b'D'],
-    "home" => return vec![0x1b, b'[', b'H'],
-    "end" => return vec![0x1b, b'[', b'F'],
-    "pageup" | "page up" => return vec![0x1b, b'[', b'5', b'~'],
-    "pagedown" | "page down" => return vec![0x1b, b'[', b'6', b'~'],
-    "f1" => return vec![0x1b, b'O', b'P'],
-    "f2" => return vec![0x1b, b'O', b'Q'],
-    "f3" => return vec![0x1b, b'O', b'R'],
-    "f4" => return vec![0x1b, b'O', b'S'],
-    "f5" => return vec![0x1b, b'[', b'1', b'5', b'~'],
-    "f6" => return vec![0x1b, b'[', b'1', b'7', b'~'],
-    "f7" => return vec![0x1b, b'[', b'1', b'8', b'~'],
-    "f8" => return vec![0x1b, b'[', b'1', b'9', b'~'],
-    "f9" => return vec![0x1b, b'[', b'2', b'0', b'~'],
-    "f10" => return vec![0x1b, b'[', b'2', b'1', b'~'],
-    "f11" => return vec![0x1b, b'[', b'2', b'3', b'~'],
-    "f12" => return vec![0x1b, b'[', b'2', b'4', b'~'],
-    "space" => return vec![b' '],
-    _ => {}
+  if modifiers.alt {
+    let base = encode_base_key(keystroke, key, modifiers);
+    if base.is_empty() {
+      return base;
+    }
+    let mut result = vec![0x1b];
+    result.extend(base);
+    return result;
   }
 
-  // 对于普通字符输入，优先使用 key_char（包含实际输入的字符，处理了 IME 和 shift 等）
+  encode_base_key(keystroke, key, modifiers)
+}
+
+fn encode_ctrl_key(key: &str) -> Option<Vec<u8>> {
+  match key {
+    "space" => return Some(vec![0x00]),
+    _ if key.len() == 1 => {
+      let ch = key.chars().next().unwrap();
+      match ch {
+        'a'..='z' => return Some(vec![ch as u8 - b'a' + 1]),
+        'A'..='Z' => return Some(vec![ch.to_ascii_lowercase() as u8 - b'a' + 1]),
+        '[' | '{' => return Some(vec![0x1b]),
+        ']' | '}' => return Some(vec![0x1d]),
+        '\\' | '|' => return Some(vec![0x1c]),
+        '^' | '~' => return Some(vec![0x1e]),
+        '_' | '-' => return Some(vec![0x1f]),
+        '@' | '`' | '2' | '0' => return Some(vec![0x00]),
+        '/' | '?' => return Some(vec![0x1f]),
+        _ => {}
+      }
+    }
+    _ => {}
+  }
+  None
+}
+
+fn encode_base_key(keystroke: &Keystroke, key: &str, modifiers: &Modifiers) -> Vec<u8> {
+  let result = match key {
+    "enter" | "return" => {
+      if modifiers.control {
+        return vec![b'\n'];
+      }
+      if modifiers.shift && !modifiers.control && !modifiers.alt {
+        return vec![0x1b, b'[', b'1', b'3', b';', b'2', b'u'];
+      }
+      return vec![b'\r'];
+    }
+    "escape" | "esc" => return vec![0x1b],
+    "tab" | "\t" => {
+      if modifiers.shift && !modifiers.control {
+        return vec![0x1b, b'[', b'Z'];
+      }
+      if modifiers.control && modifiers.shift {
+        return vec![0x1b, b'[', b'1', b';', b'6', b'u'];
+      }
+      return vec![b'\t'];
+    }
+    "backspace" => {
+      if modifiers.control {
+        return vec![0x08];
+      }
+      return vec![0x7f];
+    }
+    "delete" | "del" => vec![0x1b, b'[', b'3', b'~'],
+    "insert" | "ins" => vec![0x1b, b'[', b'2', b'~'],
+    "up" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'A']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'A']
+      } else {
+        vec![0x1b, b'[', b'A']
+      }
+    }
+    "down" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'B']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'B']
+      } else {
+        vec![0x1b, b'[', b'B']
+      }
+    }
+    "right" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'C']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'C']
+      } else {
+        vec![0x1b, b'[', b'C']
+      }
+    }
+    "left" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'D']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'D']
+      } else {
+        vec![0x1b, b'[', b'D']
+      }
+    }
+    "home" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'H']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'H']
+      } else {
+        vec![0x1b, b'[', b'H']
+      }
+    }
+    "end" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'1', b';', b'5', b'F']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'1', b';', b'2', b'F']
+      } else {
+        vec![0x1b, b'[', b'F']
+      }
+    }
+    "pageup" | "page up" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'5', b';', b'5', b'~']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'5', b';', b'2', b'~']
+      } else {
+        vec![0x1b, b'[', b'5', b'~']
+      }
+    }
+    "pagedown" | "page down" => {
+      if modifiers.control {
+        vec![0x1b, b'[', b'6', b';', b'5', b'~']
+      } else if modifiers.shift {
+        vec![0x1b, b'[', b'6', b';', b'2', b'~']
+      } else {
+        vec![0x1b, b'[', b'6', b'~']
+      }
+    }
+    _ if key.starts_with('f') || key.starts_with('F') => encode_function_key(key, modifiers),
+    "space" => return vec![b' '],
+    _ => vec![],
+  };
+
+  if !result.is_empty() {
+    return result;
+  }
+
   if let Some(key_char) = &keystroke.key_char {
     if !key_char.is_empty() {
       return key_char.as_bytes().to_vec();
     }
   }
-
-  // 回退到 key 字段
   if key.len() == 1 {
     return key.as_bytes().to_vec();
   }
+  vec![]
+}
 
+fn encode_function_key(key: &str, modifiers: &Modifiers) -> Vec<u8> {
+  let num: Option<u8> = key
+    .trim_start_matches(|c: char| c == 'f' || c == 'F')
+    .parse()
+    .ok();
+  let Some(n) = num else { return vec![] };
+
+  let modifier_param = if modifiers.control && modifiers.shift {
+    "1;6"
+  } else if modifiers.control {
+    "1;5"
+  } else if modifiers.shift {
+    "1;2"
+  } else {
+    ""
+  };
+
+  match n {
+    1 => return vec![0x1b, b'O', b'P'],
+    2 => return vec![0x1b, b'O', b'Q'],
+    3 => return vec![0x1b, b'O', b'R'],
+    4 => return vec![0x1b, b'O', b'S'],
+    5..=12 => {
+      let code = match n {
+        5 => &[b'1', b'5'][..],
+        6 => &[b'1', b'7'][..],
+        7 => &[b'1', b'8'][..],
+        8 => &[b'1', b'9'][..],
+        9 => &[b'2', b'0'][..],
+        10 => &[b'2', b'1'][..],
+        11 => &[b'2', b'3'][..],
+        12 => &[b'2', b'4'][..],
+        _ => unreachable!(),
+      };
+      if modifier_param.is_empty() {
+        let mut v = vec![0x1b, b'['];
+        v.extend_from_slice(code);
+        v.push(b'~');
+        return v;
+      } else {
+        let mut v = vec![0x1b, b'['];
+        v.extend_from_slice(code);
+        v.push(b';');
+        v.extend_from_slice(modifier_param.as_bytes());
+        v.push(b'~');
+        return v;
+      }
+    }
+    13..=19 => {
+      let code = (n - 10).to_string();
+      if modifier_param.is_empty() {
+        let mut v = vec![0x1b, b'[', b'2'];
+        v.extend_from_slice(code.as_bytes());
+        v.push(b'~');
+        return v;
+      } else {
+        let mut v = vec![0x1b, b'[', b'2'];
+        v.extend_from_slice(code.as_bytes());
+        v.push(b';');
+        v.extend_from_slice(modifier_param.as_bytes());
+        v.push(b'~');
+        return v;
+      }
+    }
+    _ => {}
+  }
   vec![]
 }

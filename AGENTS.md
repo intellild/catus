@@ -340,6 +340,107 @@ src/terminal/
 - 后续每帧检查尺寸是否变化，仅在变化时才 resize（避免不必要的系统调用）
 - `sync_size()` 同步 resize alacritty Term（当前线程 `block` 获取锁），异步 resize PTY（`cx.spawn`）
 
+## GPUI 键盘事件处理
+
+### 事件分发顺序
+
+GPUI 键盘事件分发按以下顺序执行：
+
+```
+1. keystroke_interceptors        ← 全局拦截器（最先执行）
+2. Keymap/Action 匹配            ← cx.bind_keys() 注册的键绑定
+3. on_key_down / capture_key_down ← 原始按键监听器
+4. modifiers_changed              ← 修饰键事件
+5. keystroke_observers            ← 全局观察器（最后执行）
+```
+
+**关键点**：第 2 步 Keymap 匹配如果命中一个 action 绑定，执行 action 后会**默认停止传播**（`cx.propagate_event = false`），导致第 3 步的 `on_key_down` 监听器**永远不会收到该按键**。
+
+### gpui_component Root 的全局绑定
+
+项目使用了 `gpui_component::Root` 作为窗口根视图。`Root` 在 `init()` 时会在 `"Root"` context 下注册以下全局键绑定：
+
+- `tab` → `focus_next()`（焦点导航到下一个元素）
+- `shift-tab` → `focus_prev()`（焦点导航到上一个元素）
+
+这意味着默认情况下，终端中的 Tab 键会被 Root 的焦点导航逻辑拦截，**不会到达 `on_key_down` 处理器，从而无法发送到 PTY**。
+
+### 修复方案：context 覆盖
+
+GPUI keymap 匹配遵循 **context 深度优先级**：dispatch_path 中越深层的 context 绑定的优先级越高。利用这个特性可以在更深层的 context 下重新注册键绑定来覆盖上层行为。
+
+修复步骤（以 Tab 键为例）：
+
+**1. 在需要接收特殊按键的 View 中定义 actions 和处理器：**
+
+```rust
+// src/terminal/view.rs
+actions!(terminal, [Tab, TabPrev]);
+
+impl TerminalView {
+    fn on_action_tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.input(cx, vec![b'\t']);
+        });
+    }
+
+    fn on_action_tab_prev(&mut self, _: &TabPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.input(cx, vec![0x1b, b'[', b'Z']);
+        });
+    }
+}
+
+impl Render for TerminalView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .key_context("Terminal")  // 设置比 "Root" 更深的 context
+            .on_action(cx.listener(Self::on_action_tab))
+            .on_action(cx.listener(Self::on_action_tab_prev))
+            // ...
+    }
+}
+```
+
+**2. 在 `main.rs` 中注册更深 context 的键绑定：**
+
+```rust
+// 必须在 gpui_component::init(cx) 之后注册
+// 后注册的绑定在相同 context 深度下优先级更高
+cx.bind_keys([
+    KeyBinding::new("tab", Tab, Some("Terminal")),
+    KeyBinding::new("shift-tab", TabPrev, Some("Terminal")),
+]);
+```
+
+**注意事项**：
+- `.key_context("Terminal")` 设置在 pty 输入区域的 div 上，而非更上层的容器
+- `cx.bind_keys()` 必须在 `gpui_component::init(cx)` **之后**调用，以确保「后注册优先」
+- Action 分发后默认停止传播，无需手动调用 `cx.stop_propagation()`
+- 如果还有其他特殊键被 gpui_component 或自定义 keymap 拦截（如输入框中的 `tab` 用于缩进），使用同样的 context 覆盖模式处理
+
+### 键盘事件 → PTY 的数据流（完整）
+
+```
+物理按键
+    │
+    ▼
+macOS NSEvent → parse_keystroke() → Keystroke { key: "tab", key_char: Some("\t"), ... }
+    │
+    ▼
+GPUI dispatch_key_event()
+    │
+    ├─ (1) keystroke_interceptors → 无拦截
+    │
+    ├─ (2) Keymap 匹配:
+    │      Root("Root"): "tab" → Tab(focus_next)     ← 已绑定
+    │      TerminalView("Terminal"): "tab" → Tab      ← 新增覆盖，更深 context 优先
+    │      └─ dispatch_action: on_action_tab() → terminal.input(vec![b'\t'])
+    │      └─ cx.propagate_event = false (默认行为)
+    │
+    └─ (3) on_key_down → 不会到达（但 Ctrl+Tab 等未匹配的组合仍会到达）
+```
+
 ## 编码规范
 
 ### 后台任务处理

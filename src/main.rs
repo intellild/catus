@@ -10,6 +10,7 @@ mod workspace;
 
 use app::App as CatusApp;
 use main_view::MainView;
+use terminal::view::{Tab, TabPrev};
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
@@ -17,6 +18,13 @@ fn main() {
   app.run(move |cx| {
     // Initialize GPUI Component
     gpui_component::init(cx);
+
+    // Override gpui_component Root's Tab/Shift+Tab bindings when
+    // focused inside a "Terminal" context, so Tab reaches the PTY.
+    cx.bind_keys([
+      KeyBinding::new("tab", Tab, Some("Terminal")),
+      KeyBinding::new("shift-tab", TabPrev, Some("Terminal")),
+    ]);
 
     // 创建 App，包含一个默认的 Workspace
     let catus_app = cx.new(|cx| CatusApp::new(cx));

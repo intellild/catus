@@ -230,7 +230,8 @@ impl Terminal {
     .detach();
 
     // alacritty 事件处理
-    // 处理标题变更、响铃、退出等异步事件
+    // 处理 PTY 回写（光标位置响应等）、标题变更、响铃、退出等异步事件
+    let pty_clone = pty.clone();
     cx.spawn(async move |entity, cx| -> Result<()> {
       use alacritty_terminal::event::Event;
       loop {
@@ -242,6 +243,9 @@ impl Terminal {
               terminal.title = title.clone();
               cx.emit(TerminalEvent::TitleChanged(title));
             })?;
+          }
+          Event::PtyWrite(data) => {
+            pty_clone.write(data.into_bytes()).await?;
           }
           Event::Wakeup => {
             entity.update(cx, |_, cx| cx.notify())?;
