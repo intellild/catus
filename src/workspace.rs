@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
 
+use crate::id::ID;
 use crate::terminal::{LocalPty, Terminal, TerminalSize};
 
-/// Tab ID generator
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -16,16 +17,12 @@ pub fn generate_tab_id() -> TabId {
   TabId(TAB_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
-/// Tab 类型
 #[derive(Clone)]
 pub enum TabType {
-  /// 终端 Tab
-  Terminal(Entity<Terminal>),
-  /// SFTP Tab (TODO: 实现)
+  Terminal(ID<Terminal>),
   Sftp,
 }
 
-/// Tab 状态（标题、图标等）
 #[derive(Clone)]
 pub struct TabState {
   pub title: SharedString,
@@ -41,7 +38,6 @@ impl TabState {
   }
 }
 
-/// Tab 项
 #[derive(Clone)]
 pub struct TabItem {
   pub id: TabId,
@@ -50,7 +46,6 @@ pub struct TabItem {
 }
 
 impl TabItem {
-  /// 创建一个新的 TabItem
   pub fn new(
     cx: &mut gpui::Context<Workspace>,
     title: impl Into<SharedString>,
@@ -66,32 +61,14 @@ impl TabItem {
     }
   }
 
-  /// 创建一个新的 Terminal Tab
-  ///
-  /// # Returns
-  /// * `Ok(Self)` - 成功创建 Tab
-  /// * `Err(String)` - 创建失败，返回错误信息
-  pub fn new_terminal(
-    cx: &mut gpui::Context<Workspace>,
-    rows: usize,
-    cols: usize,
-  ) -> Result<Self, String> {
-    // 创建本地 PTY
-    let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
-    let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
-
-    // 创建 Terminal Entity
-    let terminal_entity =
-      cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
-
-    Ok(Self {
+  pub fn new_terminal(cx: &mut gpui::Context<Workspace>, terminal_id: ID<Terminal>) -> Self {
+    Self {
       id: generate_tab_id(),
       state: cx.new(|_cx| TabState::new("Terminal", IconName::File)),
-      tab_type: TabType::Terminal(terminal_entity),
-    })
+      tab_type: TabType::Terminal(terminal_id),
+    }
   }
 
-  /// 创建一个新的 SFTP Tab
   pub fn new_sftp(cx: &mut gpui::Context<Workspace>) -> Self {
     Self {
       id: generate_tab_id(),
@@ -101,36 +78,38 @@ impl TabItem {
   }
 }
 
-/// Workspace 代表一个工作区，直接管理多个 Tab
 pub struct Workspace {
-  /// 所有 Tab
   pub tabs: Vec<TabItem>,
-  /// 当前激活的 Tab ID
   pub active_tab_id: Option<TabId>,
+  terminals: HashMap<ID<Terminal>, Entity<Terminal>>,
 }
 
 impl Workspace {
-  /// 创建一个新的 Workspace
-  /// 如果没有 Tab，会自动创建一个默认的 Terminal Tab
   pub fn new(cx: &mut gpui::Context<Self>) -> Self {
-    // 创建一个默认的 Terminal Tab
-    let tabs = match TabItem::new_terminal(cx, 24, 80) {
-      Ok(tab) => vec![tab],
+    let mut terminals = HashMap::new();
+    let terminal_id = ID::<Terminal>::generate();
+
+    let tab = match Self::create_terminal_entity(cx, terminal_id, &mut terminals, 24, 80) {
+      Ok(()) => TabItem::new_terminal(cx, terminal_id),
       Err(e) => {
         eprintln!("Failed to create default terminal tab: {}", e);
-        // 如果创建终端失败，创建一个空的 Workspace
-        vec![]
+        return Self {
+          tabs: vec![],
+          active_tab_id: None,
+          terminals,
+        };
       }
     };
-    let active_tab_id = tabs.first().map(|tab| tab.id);
+
+    let active_tab_id = Some(tab.id);
 
     Self {
-      tabs,
+      tabs: vec![tab],
       active_tab_id,
+      terminals,
     }
   }
 
-  /// 添加一个新的 Tab
   pub fn add_tab(&mut self, tab: TabItem) -> TabId {
     let id = tab.id;
     self.tabs.push(tab);
@@ -138,12 +117,15 @@ impl Workspace {
     id
   }
 
-  /// 关闭指定的 Tab
   pub fn close_tab(&mut self, id: TabId) -> bool {
     if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
+      let tab = &self.tabs[index];
+      if let TabType::Terminal(terminal_id) = &tab.tab_type {
+        self.terminals.remove(terminal_id);
+      }
+
       self.tabs.remove(index);
 
-      // Update active tab if needed
       if self.active_tab_id == Some(id) {
         self.active_tab_id = self.tabs.get(index.saturating_sub(1)).map(|t| t.id);
       }
@@ -152,7 +134,6 @@ impl Workspace {
     false
   }
 
-  /// 激活指定的 Tab
   pub fn activate_tab(&mut self, id: TabId) -> bool {
     if self.tabs.iter().any(|t| t.id == id) {
       self.active_tab_id = Some(id);
@@ -162,33 +143,46 @@ impl Workspace {
     }
   }
 
-  /// 获取当前激活的 Tab
   pub fn active_tab(&self) -> Option<&TabItem> {
     self
       .active_tab_id
       .and_then(|id| self.tabs.iter().find(|t| t.id == id))
   }
 
-  /// 获取当前激活的 Tab 索引
   pub fn active_index(&self) -> Option<usize> {
     self
       .active_tab_id
       .and_then(|id| self.tabs.iter().position(|t| t.id == id))
   }
 
-  /// 添加一个新的 Terminal Tab
-  ///
-  /// # Returns
-  /// * `Ok(TabId)` - 成功创建并添加 Tab
-  /// * `Err(String)` - 创建失败，返回错误信息
   pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> Result<TabId, String> {
-    let tab = TabItem::new_terminal(cx, 24, 80)?;
+    let terminal_id = ID::<Terminal>::generate();
+    Self::create_terminal_entity(cx, terminal_id, &mut self.terminals, 24, 80)?;
+    let tab = TabItem::new_terminal(cx, terminal_id);
     Ok(self.add_tab(tab))
   }
 
-  /// 添加一个新的 SFTP Tab
   pub fn add_sftp_tab(&mut self, cx: &mut gpui::Context<Self>) -> TabId {
     let tab = TabItem::new_sftp(cx);
     self.add_tab(tab)
+  }
+
+  pub fn terminal(&self, id: ID<Terminal>) -> Option<&Entity<Terminal>> {
+    self.terminals.get(&id)
+  }
+
+  fn create_terminal_entity(
+    cx: &mut gpui::Context<Self>,
+    terminal_id: ID<Terminal>,
+    terminals: &mut HashMap<ID<Terminal>, Entity<Terminal>>,
+    rows: usize,
+    cols: usize,
+  ) -> Result<(), String> {
+    let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
+    let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
+    let terminal_entity =
+      cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
+    terminals.insert(terminal_id, terminal_entity);
+    Ok(())
   }
 }

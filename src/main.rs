@@ -2,6 +2,7 @@ use gpui::*;
 use gpui_component::Root;
 
 mod app;
+mod id;
 mod main_view;
 mod terminal;
 mod title_bar;

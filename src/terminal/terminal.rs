@@ -380,3 +380,5 @@ fn renderable_cursor_to_state(cursor: RenderableCursor) -> CursorState {
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}
+
+crate::impl_id!(Terminal);

@@ -4,11 +4,9 @@ use crate::terminal::TerminalView;
 use crate::title_bar::{TitleBarRoot, TitleBarTabs};
 use crate::workspace::{TabId, TabType, Workspace};
 
-/// Main view
 pub struct MainView {
   workspace: Entity<Workspace>,
   title_bar: Entity<TitleBarRoot>,
-  /// Cache the current active terminal view
   current_terminal_view: Option<(TabId, Entity<TerminalView>)>,
 }
 
@@ -29,44 +27,53 @@ impl MainView {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> impl IntoElement {
-    let active_tab = self.workspace.read(cx).active_tab().cloned();
+    let workspace = self.workspace.read(cx);
+    let active_tab = workspace.active_tab().cloned();
+    let terminal_entity = active_tab.as_ref().and_then(|tab| {
+      if let TabType::Terminal(terminal_id) = &tab.tab_type {
+        workspace.terminal(*terminal_id).cloned()
+      } else {
+        None
+      }
+    });
 
-    if let Some(tab) = active_tab {
-      match &tab.tab_type {
-        TabType::Terminal(terminal) => {
-          // Reuse existing TerminalView if it's for the same tab, otherwise create new one
-          let terminal_view = match &self.current_terminal_view {
-            Some((id, view)) if *id == tab.id => view.clone(),
-            _ => {
-              let view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
-              self.current_terminal_view = Some((tab.id, view.clone()));
-              view
-            }
-          };
-
-          // Ensure the terminal view is focused so it receives key events
-          terminal_view.focus_handle(cx).focus(window);
-
-          div()
-            .flex_1()
-            .size_full()
-            .child(terminal_view)
-            .into_any_element()
+    if let (Some(tab), Some(terminal)) = (active_tab, terminal_entity) {
+      let terminal_view = match &self.current_terminal_view {
+        Some((id, view)) if *id == tab.id => view.clone(),
+        _ => {
+          let view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
+          self.current_terminal_view = Some((tab.id, view.clone()));
+          view
         }
-        TabType::Sftp => {
-          // TODO: 实现 SFTP 视图
-          div()
-            .flex_1()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child("SFTP view not implemented yet")
-            .into_any_element()
-        }
+      };
+
+      terminal_view.focus_handle(cx).focus(window);
+
+      div()
+        .flex_1()
+        .size_full()
+        .child(terminal_view)
+        .into_any_element()
+    } else if let Some(_tab) = workspace.active_tab() {
+      match _tab.tab_type {
+        TabType::Sftp => div()
+          .flex_1()
+          .size_full()
+          .flex()
+          .items_center()
+          .justify_center()
+          .child("SFTP view not implemented yet")
+          .into_any_element(),
+        _ => div()
+          .flex_1()
+          .size_full()
+          .flex()
+          .items_center()
+          .justify_center()
+          .child("Terminal not found")
+          .into_any_element(),
       }
     } else {
-      // 没有激活的 Tab
       div()
         .flex_1()
         .size_full()
@@ -81,7 +88,6 @@ impl MainView {
 
 impl Render for MainView {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // Clear terminal view if the active tab has changed to a non-terminal tab
     if let Some((id, _)) = &self.current_terminal_view {
       if let Some(active_tab) = self.workspace.read(cx).active_tab() {
         if active_tab.id != *id {
@@ -98,7 +104,6 @@ impl Render for MainView {
       .size_full()
       .child(self.title_bar.clone())
       .child(
-        // Main content area
         div()
           .flex()
           .flex_row()
