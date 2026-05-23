@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::Root;
+use gpui_component::{Root, Theme, ThemeMode};
 
 mod app;
 mod id;
@@ -19,6 +19,7 @@ fn main() {
 
   app.run(move |cx| {
     gpui_component::init(cx);
+    Theme::change(ThemeMode::Dark, None, cx);
 
     cx.bind_keys([
       KeyBinding::new("tab", Tab, Some("Terminal")),
