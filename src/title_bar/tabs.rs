@@ -1,4 +1,4 @@
-use crate::workspace::{TabType, Workspace};
+use crate::workspace::Workspace;
 use gpui::*;
 use gpui_component::button::Button;
 use gpui_component::notification::Notification;
@@ -45,7 +45,6 @@ impl TitleBarTabs {
       .workspace
       .update(cx, |workspace, cx| workspace.add_terminal_tab(cx))
     {
-      // 显示错误通知
       window.push_notification(Notification::error(error_msg), cx);
     } else {
       cx.notify();
@@ -69,17 +68,10 @@ impl Render for TitleBarTabs {
           .on_click(cx.listener(|this, ix: &usize, window, cx| {
             this.handle_tab_click(*ix, window, cx);
           }))
-          .children(tabs.iter().enumerate().map(|(ix, tab)| {
+          .children(tabs.iter().enumerate().map(|(_ix, tab)| {
             let state = tab.state.read(cx);
             let tab_icon = state.icon.clone();
-
-            let title: SharedString = match &tab.tab_type {
-              TabType::Terminal(terminal_id) => workspace
-                .terminal(*terminal_id)
-                .map(|t| t.read(cx).title().to_string().into())
-                .unwrap_or_else(|| "Terminal".into()),
-              TabType::Sftp => "SFTP".into(),
-            };
+            let title: SharedString = "Terminal".into();
 
             Tab::new().label(title).icon(tab_icon).suffix(
               div()
@@ -93,7 +85,7 @@ impl Render for TitleBarTabs {
                 .hover(|style| style.bg(cx.theme().secondary_hover))
                 .on_click(cx.listener(move |this, _, window, cx| {
                   cx.stop_propagation();
-                  this.handle_tab_close(ix, window, cx);
+                  this.handle_tab_close(_ix, window, cx);
                 }))
                 .child(Icon::new(IconName::Close).with_size(px(12.))),
             )

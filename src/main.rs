@@ -4,29 +4,33 @@ use gpui_component::Root;
 mod app;
 mod id;
 mod main_view;
+mod pane;
 mod terminal;
 mod title_bar;
 mod workspace;
 
 use app::App as CatusApp;
 use main_view::MainView;
+use pane::{ClosePane, SplitDown, SplitRight};
 use terminal::view::{Tab, TabPrev};
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
 
   app.run(move |cx| {
-    // Initialize GPUI Component
     gpui_component::init(cx);
 
-    // Override gpui_component Root's Tab/Shift+Tab bindings when
-    // focused inside a "Terminal" context, so Tab reaches the PTY.
     cx.bind_keys([
       KeyBinding::new("tab", Tab, Some("Terminal")),
       KeyBinding::new("shift-tab", TabPrev, Some("Terminal")),
     ]);
 
-    // 创建 App，包含一个默认的 Workspace
+    cx.bind_keys([
+      KeyBinding::new("cmd-d", SplitRight, Some("Pane")),
+      KeyBinding::new("cmd-shift-d", SplitDown, Some("Pane")),
+      KeyBinding::new("cmd-w", ClosePane, Some("Pane")),
+    ]);
+
     let catus_app = cx.new(|cx| CatusApp::new(cx));
     let workspace = catus_app.read(cx).workspace().clone();
 

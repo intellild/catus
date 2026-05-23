@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui::{AppContext, Entity};
+use gpui::{App, AppContext, Entity};
 use gpui_component::IconName;
 
 use crate::id::ID;
-use crate::terminal::{LocalPty, Terminal, TerminalSize};
+use crate::pane::PaneGroup;
+use crate::terminal::{LocalPty, Terminal, TerminalSize, TerminalView};
 
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -15,12 +16,6 @@ pub struct TabId(pub u64);
 
 pub fn generate_tab_id() -> TabId {
   TabId(TAB_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
-}
-
-#[derive(Clone)]
-pub enum TabType {
-  Terminal(ID<Terminal>),
-  Sftp,
 }
 
 #[derive(Clone)]
@@ -38,35 +33,7 @@ impl TabState {
 pub struct TabItem {
   pub id: TabId,
   pub state: Entity<TabState>,
-  pub tab_type: TabType,
-}
-
-impl TabItem {
-  pub fn new(cx: &mut gpui::Context<Workspace>, icon: IconName, tab_type: TabType) -> Self {
-    let state = cx.new(|_cx| TabState::new(icon));
-
-    Self {
-      id: generate_tab_id(),
-      state,
-      tab_type,
-    }
-  }
-
-  pub fn new_terminal(cx: &mut gpui::Context<Workspace>, terminal_id: ID<Terminal>) -> Self {
-    Self {
-      id: generate_tab_id(),
-      state: cx.new(|_cx| TabState::new(IconName::File)),
-      tab_type: TabType::Terminal(terminal_id),
-    }
-  }
-
-  pub fn new_sftp(cx: &mut gpui::Context<Workspace>) -> Self {
-    Self {
-      id: generate_tab_id(),
-      state: cx.new(|_cx| TabState::new(IconName::Folder)),
-      tab_type: TabType::Sftp,
-    }
-  }
+  pub pane_group: Entity<PaneGroup>,
 }
 
 pub struct Workspace {
@@ -80,10 +47,10 @@ impl Workspace {
     let mut terminals = HashMap::new();
     let terminal_id = ID::<Terminal>::generate();
 
-    let tab = match Self::create_terminal_entity(cx, terminal_id, &mut terminals, 24, 80) {
-      Ok(()) => TabItem::new_terminal(cx, terminal_id),
+    let terminal = match Self::create_terminal_entity(cx, terminal_id, &mut terminals, 24, 80) {
+      Ok(t) => t,
       Err(e) => {
-        eprintln!("Failed to create default terminal tab: {}", e);
+        eprintln!("Failed to create default terminal: {}", e);
         return Self {
           tabs: vec![],
           active_tab_id: None,
@@ -92,6 +59,7 @@ impl Workspace {
       }
     };
 
+    let tab = Self::make_tab(cx, terminal, &terminals);
     let active_tab_id = Some(tab.id);
 
     Self {
@@ -99,6 +67,26 @@ impl Workspace {
       active_tab_id,
       terminals,
     }
+  }
+
+  fn make_tab(
+    cx: &mut gpui::Context<Self>,
+    terminal: Entity<Terminal>,
+    _terminals: &HashMap<ID<Terminal>, Entity<Terminal>>,
+  ) -> TabItem {
+    let terminal_view = cx.new(|cx| TerminalView::new(terminal, cx));
+    let workspace_handle = cx.entity().clone();
+    let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
+    TabItem {
+      id: generate_tab_id(),
+      state: cx.new(|_cx| TabState::new(IconName::File)),
+      pane_group,
+    }
+  }
+
+  pub fn create_terminal(&mut self, cx: &mut App) -> Result<Entity<Terminal>, String> {
+    let terminal_id = ID::<Terminal>::generate();
+    Self::create_terminal_entity(cx, terminal_id, &mut self.terminals, 24, 80)
   }
 
   pub fn add_tab(&mut self, tab: TabItem) -> TabId {
@@ -110,13 +98,7 @@ impl Workspace {
 
   pub fn close_tab(&mut self, id: TabId) -> bool {
     if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
-      let tab = &self.tabs[index];
-      if let TabType::Terminal(terminal_id) = &tab.tab_type {
-        self.terminals.remove(terminal_id);
-      }
-
       self.tabs.remove(index);
-
       if self.active_tab_id == Some(id) {
         self.active_tab_id = self.tabs.get(index.saturating_sub(1)).map(|t| t.id);
       }
@@ -147,15 +129,9 @@ impl Workspace {
   }
 
   pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> Result<TabId, String> {
-    let terminal_id = ID::<Terminal>::generate();
-    Self::create_terminal_entity(cx, terminal_id, &mut self.terminals, 24, 80)?;
-    let tab = TabItem::new_terminal(cx, terminal_id);
+    let terminal = self.create_terminal(cx)?;
+    let tab = Self::make_tab(cx, terminal, &self.terminals);
     Ok(self.add_tab(tab))
-  }
-
-  pub fn add_sftp_tab(&mut self, cx: &mut gpui::Context<Self>) -> TabId {
-    let tab = TabItem::new_sftp(cx);
-    self.add_tab(tab)
   }
 
   pub fn terminal(&self, id: ID<Terminal>) -> Option<&Entity<Terminal>> {
@@ -163,17 +139,17 @@ impl Workspace {
   }
 
   fn create_terminal_entity(
-    cx: &mut gpui::Context<Self>,
+    cx: &mut App,
     terminal_id: ID<Terminal>,
     terminals: &mut HashMap<ID<Terminal>, Entity<Terminal>>,
     rows: usize,
     cols: usize,
-  ) -> Result<(), String> {
+  ) -> Result<Entity<Terminal>, String> {
     let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
     let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
     let terminal_entity =
       cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
-    terminals.insert(terminal_id, terminal_entity);
-    Ok(())
+    terminals.insert(terminal_id, terminal_entity.clone());
+    Ok(terminal_entity)
   }
 }
