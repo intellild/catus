@@ -91,12 +91,15 @@ impl PaneGroup {
     self.close_active_pane(cx);
   }
 
-  fn render_node(node: &PaneNode, cx: &App) -> AnyElement {
+  fn render_node(node: &PaneNode, has_siblings: bool, cx: &App) -> AnyElement {
     match node {
       PaneNode::Leaf { view, .. } => {
-        let title = view.title(cx);
-        match view {
-          PaneView::Terminal(entity) => div()
+        let terminal_el = match view {
+          PaneView::Terminal(entity) => entity.clone().into_any_element(),
+        };
+        if has_siblings {
+          let title = view.title(cx);
+          div()
             .flex()
             .flex_col()
             .size_full()
@@ -117,14 +120,15 @@ impl PaneGroup {
                     .child(title),
                 ),
             )
-            .child(
-              div()
-                .flex_1()
-                .w_full()
-                .overflow_hidden()
-                .child(entity.clone()),
-            )
-            .into_any_element(),
+            .child(div().flex_1().w_full().overflow_hidden().child(terminal_el))
+            .into_any_element()
+        } else {
+          div()
+            .size_full()
+            .bg(cx.theme().background)
+            .overflow_hidden()
+            .child(terminal_el)
+            .into_any_element()
         }
       }
       PaneNode::Split {
@@ -140,7 +144,7 @@ impl PaneGroup {
           .when(is_h, |d: Div| d.flex_row())
           .when(!is_h, |d: Div| d.flex_col())
           .children(children.iter().enumerate().flat_map(|(i, child)| {
-            let child_el = Self::render_node(child, cx);
+            let child_el = Self::render_node(child, true, cx);
             let mut elements: Vec<AnyElement> = vec![
               div()
                 .flex_1()
@@ -177,7 +181,11 @@ impl Render for PaneGroup {
       .on_action(cx.listener(Self::on_action_split_right))
       .on_action(cx.listener(Self::on_action_split_down))
       .on_action(cx.listener(Self::on_action_close_pane))
-      .child(Self::render_node(&self.root, &cx))
+      .child(Self::render_node(
+        &self.root,
+        self.root.leaf_count() > 1,
+        &cx,
+      ))
   }
 }
 
