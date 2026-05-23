@@ -1,6 +1,7 @@
 use crate::terminal::terminal::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
+use gpui_component::ActiveTheme;
 
 actions!(terminal, [Tab, TabPrev]);
 
@@ -120,7 +121,7 @@ impl Render for TerminalView {
       .id("terminal-view")
       .key_context("Terminal")
       .size_full()
-      .bg(gpui::rgb(0x1e1e1e))
+      .bg(cx.theme().background)
       .cursor_text()
       .child(TerminalElement::new(
         self.terminal.clone(),

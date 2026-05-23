@@ -2,6 +2,7 @@ use crate::terminal::content::{TerminalContent, ansi_color_to_rgb, rgb_to_hsla};
 use crate::terminal::terminal::Terminal;
 use alacritty_terminal::term::cell::Flags;
 use gpui::*;
+use gpui_component::ActiveTheme;
 use std::mem;
 
 /// 终端元素布局状态
@@ -311,7 +312,7 @@ impl Element for TerminalElement {
       content,
       char_width: self.char_width,
       char_height: self.char_height,
-      background_color: gpui::rgb(0x1e1e1e).into(),
+      background_color: cx.theme().background,
       cursor_visible: true,
     }
   }

@@ -1,5 +1,6 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::ActiveTheme;
 
 use crate::pane::any_view::PaneView;
 use crate::pane::pane_node::{PaneLeafId, PaneNode, SplitDirection};
@@ -90,16 +91,42 @@ impl PaneGroup {
     self.close_active_pane(cx);
   }
 
-  fn render_node(node: &PaneNode) -> AnyElement {
+  fn render_node(node: &PaneNode, cx: &App) -> AnyElement {
     match node {
-      PaneNode::Leaf { view, .. } => match view {
-        PaneView::Terminal(entity) => div()
-          .size_full()
-          .bg(gpui::rgb(0x1e1e1e))
-          .overflow_hidden()
-          .child(entity.clone())
-          .into_any_element(),
-      },
+      PaneNode::Leaf { view, .. } => {
+        let title = view.title(cx);
+        match view {
+          PaneView::Terminal(entity) => div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(
+              div()
+                .h(px(28.))
+                .bg(cx.theme().title_bar)
+                .border_b_1()
+                .border_color(cx.theme().title_bar_border)
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .child(
+                  div()
+                    .text_size(px(11.))
+                    .text_color(cx.theme().foreground)
+                    .child(title),
+                ),
+            )
+            .child(
+              div()
+                .flex_1()
+                .w_full()
+                .overflow_hidden()
+                .child(entity.clone()),
+            )
+            .into_any_element(),
+        }
+      }
       PaneNode::Split {
         direction,
         children,
@@ -113,7 +140,7 @@ impl PaneGroup {
           .when(is_h, |d: Div| d.flex_row())
           .when(!is_h, |d: Div| d.flex_col())
           .children(children.iter().enumerate().flat_map(|(i, child)| {
-            let child_el = Self::render_node(child);
+            let child_el = Self::render_node(child, cx);
             let mut elements: Vec<AnyElement> = vec![
               div()
                 .flex_1()
@@ -126,9 +153,9 @@ impl PaneGroup {
             if i < n - 1 {
               elements.push(
                 div()
-                  .when(is_h, |d: Div| d.w(px(1.)).h_full())
-                  .when(!is_h, |d: Div| d.h(px(1.)).w_full())
-                  .bg(gpui::rgb(0x333333))
+                  .when(is_h, |d: Div| d.w(px(4.)).h_full())
+                  .when(!is_h, |d: Div| d.h(px(4.)).w_full())
+                  .bg(cx.theme().border)
                   .into_any_element(),
               );
             }
@@ -150,7 +177,7 @@ impl Render for PaneGroup {
       .on_action(cx.listener(Self::on_action_split_right))
       .on_action(cx.listener(Self::on_action_split_down))
       .on_action(cx.listener(Self::on_action_close_pane))
-      .child(Self::render_node(&self.root))
+      .child(Self::render_node(&self.root, &cx))
   }
 }
 
