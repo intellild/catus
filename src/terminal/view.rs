@@ -3,7 +3,7 @@ use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use gpui_component::ActiveTheme;
 
-actions!(terminal, [Tab, TabPrev]);
+actions!(terminal, [Tab, TabPrev, ScrollToBottom]);
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
@@ -29,6 +29,43 @@ impl TerminalView {
   fn on_action_tab_prev(&mut self, _: &TabPrev, _: &mut Window, cx: &mut Context<Self>) {
     self.terminal.update(cx, |terminal, cx| {
       terminal.input(cx, vec![0x1b, b'[', b'Z']);
+    });
+  }
+
+  fn on_action_scroll_to_bottom(
+    &mut self,
+    _: &ScrollToBottom,
+    _: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_to_bottom(true, cx);
+    });
+  }
+
+  fn handle_scroll_wheel(
+    &mut self,
+    event: &ScrollWheelEvent,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.terminal.update(cx, |terminal, cx| match event.delta {
+      ScrollDelta::Lines(lines) => {
+        let delta = lines.y as i32;
+        if delta > 0 {
+          terminal.scroll_line_up(true, cx);
+        } else if delta < 0 {
+          terminal.scroll_line_down(true, cx);
+        }
+      }
+      ScrollDelta::Pixels(pixels) => {
+        let delta: f32 = pixels.y.into();
+        if delta > 0. {
+          terminal.scroll_line_up(true, cx);
+        } else if delta < 0. {
+          terminal.scroll_line_down(true, cx);
+        }
+      }
     });
   }
 
@@ -60,43 +97,43 @@ impl TerminalView {
 
   /// 向上滚动一行
   pub fn scroll_line_up(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_line_up();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_line_up(true, cx);
     });
   }
 
   /// 向下滚动一行
   pub fn scroll_line_down(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_line_down();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_line_down(true, cx);
     });
   }
 
   /// 向上滚动一页
   pub fn scroll_page_up(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_page_up();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_page_up(true, cx);
     });
   }
 
   /// 向下滚动一页
   pub fn scroll_page_down(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_page_down();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_page_down(true, cx);
     });
   }
 
   /// 滚动到顶部
   pub fn scroll_to_top(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_to_top();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_to_top(true, cx);
     });
   }
 
   /// 滚动到底部
   pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      terminal.scroll_to_bottom();
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.scroll_to_bottom(true, cx);
     });
   }
 
@@ -117,22 +154,52 @@ impl TerminalView {
 
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    let terminal = self.terminal.clone();
+    let focus_handle = self.focus_handle.clone();
+    let show_scroll_button = self.terminal.read(cx).user_has_scrolled();
+
     div()
       .id("terminal-view")
       .key_context("Terminal")
       .size_full()
       .bg(cx.theme().background)
       .cursor_text()
-      .child(TerminalElement::new(
-        self.terminal.clone(),
-        self.focus_handle.clone(),
-      ))
+      .relative()
+      .child(TerminalElement::new(terminal.clone(), focus_handle.clone()))
       .on_action(cx.listener(Self::on_action_tab))
       .on_action(cx.listener(Self::on_action_tab_prev))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))
+      .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
       .track_focus(&self.focus_handle)
+      .children(show_scroll_button.then(|| {
+        div()
+          .id("scroll-to-bottom-btn")
+          .absolute()
+          .right_2()
+          .bottom_2()
+          .w_8()
+          .h_8()
+          .rounded_full()
+          .bg(gpui::rgba(0x40404080))
+          .hover(|style| style.bg(gpui::rgba(0x606060ff)))
+          .flex()
+          .items_center()
+          .justify_center()
+          .cursor_pointer()
+          .text_color(gpui::rgb(0xffffff))
+          .text_sm()
+          .child("↓")
+          .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _event, _window, cx| {
+              this.terminal.update(cx, |terminal, cx| {
+                terminal.scroll_to_bottom(false, cx);
+              });
+            }),
+          )
+      }))
   }
 }
 

@@ -4,7 +4,7 @@ use crate::terminal::content::{
 use crate::terminal::pty::{Pty, TerminalSize};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::term::{Config, RenderableCursor, TermMode};
+use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use async_channel::{Sender, unbounded};
 use async_lock::Mutex;
@@ -125,17 +125,25 @@ impl Term {
     for indexed in content.display_iter {
       cells.push(IndexedCell {
         point: TerminalPoint {
-          line: indexed.point.line,
+          line: indexed.point.line - content.display_offset,
           column: indexed.point.column,
         },
         cell: indexed.cell.clone(),
       });
     }
     let cursor = content.cursor;
-    let cursor_state = renderable_cursor_to_state(cursor);
+    let cursor_state = CursorState {
+      point: TerminalPoint {
+        line: cursor.point.line - content.display_offset,
+        column: cursor.point.column,
+      },
+      shape: cursor.shape,
+    };
     let cursor_char = cells
       .iter()
-      .find(|cell| cell.point.line == cursor.point.line && cell.point.column == cursor.point.column)
+      .find(|cell| {
+        cell.point.line == cursor_state.point.line && cell.point.column == cursor_state.point.column
+      })
       .map(|cell| cell.cell.c)
       .unwrap_or(' ');
     ExtractedTerminalData {
@@ -186,6 +194,7 @@ pub struct Terminal {
   selection_head: Option<TerminalPoint>,
   title: String,
   mouse_mode: bool,
+  user_has_scrolled: bool,
 }
 
 impl Terminal {
@@ -277,6 +286,7 @@ impl Terminal {
       selection_head: None,
       title: "Terminal".to_string(),
       mouse_mode: false,
+      user_has_scrolled: false,
     })
   }
 
@@ -292,7 +302,7 @@ impl Terminal {
 
   /// 发送输入数据到终端
   pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>) {
-    self.scroll_to_bottom();
+    self.scroll_to_bottom(false, cx);
 
     let pty = self.pty.clone();
     cx.spawn(async move |_, _| pty.write(data).await).detach();
@@ -336,44 +346,56 @@ impl Terminal {
   }
 
   /// 滚动终端
-  pub fn scroll(&mut self, scroll: alacritty_terminal::grid::Scroll) {
-    // self.events.push_back(InternalEvent::Scroll(scroll));
+  pub fn scroll(
+    &mut self,
+    scroll: alacritty_terminal::grid::Scroll,
+    user_initiated: bool,
+    cx: &mut Context<Self>,
+  ) {
+    cx.background_executor()
+      .block(self.term.lock())
+      .term
+      .scroll_display(scroll);
+    if user_initiated {
+      self.user_has_scrolled = true;
+    }
+    cx.notify();
   }
 
   /// 向上滚动一行
-  pub fn scroll_line_up(&mut self) {
+  pub fn scroll_line_up(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Delta(1));
+    self.scroll(Scroll::Delta(1), user_initiated, cx);
   }
 
   /// 向下滚动一行
-  pub fn scroll_line_down(&mut self) {
+  pub fn scroll_line_down(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Delta(-1));
+    self.scroll(Scroll::Delta(-1), user_initiated, cx);
   }
 
   /// 向上滚动一页
-  pub fn scroll_page_up(&mut self) {
+  pub fn scroll_page_up(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::PageUp);
+    self.scroll(Scroll::PageUp, user_initiated, cx);
   }
 
   /// 向下滚动一页
-  pub fn scroll_page_down(&mut self) {
+  pub fn scroll_page_down(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::PageDown);
+    self.scroll(Scroll::PageDown, user_initiated, cx);
   }
 
   /// 滚动到顶部
-  pub fn scroll_to_top(&mut self) {
+  pub fn scroll_to_top(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Top);
+    self.scroll(Scroll::Top, user_initiated, cx);
   }
 
   /// 滚动到底部
-  pub fn scroll_to_bottom(&mut self) {
+  pub fn scroll_to_bottom(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Bottom);
+    self.scroll(Scroll::Bottom, user_initiated, cx);
   }
 
   /// 获取当前内容的引用
@@ -384,6 +406,11 @@ impl Terminal {
   /// 获取终端标题
   pub fn title(&self) -> &str {
     &self.title
+  }
+
+  /// 用户是否手动滚动过（即不在自动跟随底部状态）
+  pub fn user_has_scrolled(&self) -> bool {
+    self.user_has_scrolled
   }
 
   /// 是否滚动到顶部
@@ -399,10 +426,23 @@ impl Terminal {
   /// 从 alacritty Term 提取最新内容并更新到 TerminalContent
   ///
   /// 在 prepaint 阶段调用，确保渲染前数据是最新的。
-  /// 注意：这里不调用 cx.notify()，因为 prepaint 本身就在帧循环中，
-  /// 调用方（PTY reader / Event Wakeup）已经触发过 notify。
+  /// 如果用户未手动滚动，自动滚动到底部以跟随新输出。
   pub fn refresh_content(&mut self, cx: &mut Context<Self>) {
-    let extracted = cx.background_executor().block(self.term.lock()).extract();
+    let mut term = cx.background_executor().block(self.term.lock());
+
+    if !self.user_has_scrolled {
+      term
+        .term
+        .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    let extracted = term.extract();
+    drop(term);
+
+    if self.user_has_scrolled && extracted.display_offset == 0 {
+      self.user_has_scrolled = false;
+    }
+
     self.apply_extracted_data(extracted);
   }
 
@@ -412,17 +452,6 @@ impl Terminal {
     self.content.cursor_char = data.cursor_char;
     self.content.mode = data.mode;
     self.content.display_offset = data.display_offset;
-  }
-}
-
-/// 将 alacritty 的 RenderableCursor 转换为 CursorState
-fn renderable_cursor_to_state(cursor: RenderableCursor) -> CursorState {
-  CursorState {
-    point: TerminalPoint {
-      line: cursor.point.line,
-      column: cursor.point.column,
-    },
-    shape: cursor.shape,
   }
 }
 
