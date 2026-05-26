@@ -49,21 +49,24 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
+    use crate::terminal::constants::{SCROLL_LINES_PER_WHEEL_TICK, SCROLL_PIXEL_THRESHOLD};
+
     self.terminal.update(cx, |terminal, cx| match event.delta {
       ScrollDelta::Lines(lines) => {
-        let delta = lines.y as i32;
+        let delta = lines.y as i32 * SCROLL_LINES_PER_WHEEL_TICK;
         if delta > 0 {
-          terminal.scroll_line_up(true, cx);
-        } else if delta < 0 {
           terminal.scroll_line_down(true, cx);
+        } else if delta < 0 {
+          terminal.scroll_line_up(true, cx);
         }
       }
       ScrollDelta::Pixels(pixels) => {
         let delta: f32 = pixels.y.into();
-        if delta > 0. {
-          terminal.scroll_line_up(true, cx);
-        } else if delta < 0. {
+        let ticks = (delta / SCROLL_PIXEL_THRESHOLD) as i32;
+        if ticks > 0 {
           terminal.scroll_line_down(true, cx);
+        } else if ticks < 0 {
+          terminal.scroll_line_up(true, cx);
         }
       }
     });

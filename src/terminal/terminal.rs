@@ -121,20 +121,27 @@ impl Term {
 
   pub fn extract(&self) -> ExtractedTerminalData {
     let content = self.term.renderable_content();
+    let display_offset = content.display_offset;
+    let screen_lines = self.term.screen_lines() as i32;
     let mut cells = Vec::new();
     for indexed in content.display_iter {
+      let line: i32 = indexed.point.line.0 + display_offset as i32;
+      if line < 0 || line >= screen_lines {
+        continue;
+      }
       cells.push(IndexedCell {
         point: TerminalPoint {
-          line: indexed.point.line - content.display_offset,
+          line: alacritty_terminal::index::Line(line),
           column: indexed.point.column,
         },
         cell: indexed.cell.clone(),
       });
     }
     let cursor = content.cursor;
+    let cursor_line = cursor.point.line.0 + display_offset as i32;
     let cursor_state = CursorState {
       point: TerminalPoint {
-        line: cursor.point.line - content.display_offset,
+        line: alacritty_terminal::index::Line(cursor_line),
         column: cursor.point.column,
       },
       shape: cursor.shape,
@@ -151,7 +158,7 @@ impl Term {
       cursor_state,
       cursor_char,
       mode: content.mode,
-      display_offset: content.display_offset,
+      display_offset,
     }
   }
 }
