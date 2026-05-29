@@ -381,6 +381,12 @@ impl Terminal {
     self.scroll(Scroll::Delta(-1), user_initiated, cx);
   }
 
+  /// 滚动指定行数（正数向上，负数向下）
+  pub fn scroll_lines(&mut self, lines: i32, user_initiated: bool, cx: &mut Context<Self>) {
+    use alacritty_terminal::grid::Scroll;
+    self.scroll(Scroll::Delta(lines), user_initiated, cx);
+  }
+
   /// 向上滚动一页
   pub fn scroll_page_up(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
@@ -446,11 +452,17 @@ impl Terminal {
     let extracted = term.extract();
     drop(term);
 
+    let was_user_scrolled = self.user_has_scrolled;
     if self.user_has_scrolled && extracted.display_offset == 0 {
       self.user_has_scrolled = false;
     }
 
+    self.content.scrolled_to_bottom = extracted.display_offset == 0;
     self.apply_extracted_data(extracted);
+
+    if was_user_scrolled && !self.user_has_scrolled {
+      cx.notify();
+    }
   }
 
   fn apply_extracted_data(&mut self, data: ExtractedTerminalData) {

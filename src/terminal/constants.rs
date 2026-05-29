@@ -1,3 +1,3 @@
-pub const SCROLL_LINES_PER_WHEEL_TICK: i32 = 3;
+pub const SCROLL_LINES_PER_WHEEL_TICK: i32 = 1;
 
-pub const SCROLL_PIXEL_THRESHOLD: f32 = 16.;
+pub const SCROLL_PIXEL_THRESHOLD: f32 = 10.;

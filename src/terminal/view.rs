@@ -14,6 +14,10 @@ pub struct TerminalView {
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
   pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
+    cx.observe(&terminal, |_this, _terminal, cx| {
+      cx.notify();
+    })
+    .detach();
     Self {
       terminal,
       focus_handle: cx.focus_handle(),
@@ -54,19 +58,15 @@ impl TerminalView {
     self.terminal.update(cx, |terminal, cx| match event.delta {
       ScrollDelta::Lines(lines) => {
         let delta = lines.y as i32 * SCROLL_LINES_PER_WHEEL_TICK;
-        if delta > 0 {
-          terminal.scroll_line_down(true, cx);
-        } else if delta < 0 {
-          terminal.scroll_line_up(true, cx);
+        if delta != 0 {
+          terminal.scroll_lines(delta, true, cx);
         }
       }
       ScrollDelta::Pixels(pixels) => {
         let delta: f32 = pixels.y.into();
         let ticks = (delta / SCROLL_PIXEL_THRESHOLD) as i32;
-        if ticks > 0 {
-          terminal.scroll_line_down(true, cx);
-        } else if ticks < 0 {
-          terminal.scroll_line_up(true, cx);
+        if ticks != 0 {
+          terminal.scroll_lines(ticks, true, cx);
         }
       }
     });
@@ -159,7 +159,8 @@ impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let terminal = self.terminal.clone();
     let focus_handle = self.focus_handle.clone();
-    let show_scroll_button = self.terminal.read(cx).user_has_scrolled();
+    let show_scroll_button =
+      self.terminal.read(cx).user_has_scrolled() && !self.terminal.read(cx).scrolled_to_bottom();
 
     div()
       .id("terminal-view")
