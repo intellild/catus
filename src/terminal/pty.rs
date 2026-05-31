@@ -75,10 +75,4 @@ pub trait Pty: Send + Sync {
   /// # Errors
   /// 如果关闭失败则返回错误
   async fn close(&mut self) -> Result<()>;
-
-  /// 获取进程 ID（本地 PTY 有效）
-  ///
-  /// # Returns
-  /// 如果可用，返回进程 ID，否则返回 None
-  fn process_id(&self) -> Option<u32>;
 }

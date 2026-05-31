@@ -10,7 +10,7 @@ pub enum PaneView {
 impl PaneView {
   pub fn title(&self, cx: &App) -> String {
     match self {
-      PaneView::Terminal(view) => view.read(cx).terminal().read(cx).title().to_string(),
+      PaneView::Terminal(view) => view.read(cx).title(cx),
     }
   }
 }

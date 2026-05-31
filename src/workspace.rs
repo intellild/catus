@@ -134,10 +134,6 @@ impl Workspace {
     Ok(self.add_tab(tab))
   }
 
-  pub fn terminal(&self, id: ID<Terminal>) -> Option<&Entity<Terminal>> {
-    self.terminals.get(&id)
-  }
-
   fn create_terminal_entity(
     cx: &mut App,
     terminal_id: ID<Terminal>,

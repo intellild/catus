@@ -36,17 +36,6 @@ impl TerminalView {
     });
   }
 
-  fn on_action_scroll_to_bottom(
-    &mut self,
-    _: &ScrollToBottom,
-    _: &mut Window,
-    cx: &mut Context<Self>,
-  ) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_to_bottom(true, cx);
-    });
-  }
-
   fn handle_scroll_wheel(
     &mut self,
     event: &ScrollWheelEvent,
@@ -86,79 +75,15 @@ impl TerminalView {
     });
   }
 
-  /// 处理粘贴事件
-  fn handle_paste(&mut self, text: &str, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      // terminal.paste(text);
-    });
-  }
-
-  /// 获取关联的 Terminal Entity
-  pub fn terminal(&self) -> &Entity<Terminal> {
-    &self.terminal
-  }
-
-  /// 向上滚动一行
-  pub fn scroll_line_up(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_line_up(true, cx);
-    });
-  }
-
-  /// 向下滚动一行
-  pub fn scroll_line_down(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_line_down(true, cx);
-    });
-  }
-
-  /// 向上滚动一页
-  pub fn scroll_page_up(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_page_up(true, cx);
-    });
-  }
-
-  /// 向下滚动一页
-  pub fn scroll_page_down(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_page_down(true, cx);
-    });
-  }
-
-  /// 滚动到顶部
-  pub fn scroll_to_top(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_to_top(true, cx);
-    });
-  }
-
-  /// 滚动到底部
-  pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, cx| {
-      terminal.scroll_to_bottom(true, cx);
-    });
-  }
-
-  /// 清除屏幕
-  pub fn clear(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      // terminal.clear();
-    });
-  }
-
-  /// 复制选区
-  pub fn copy(&mut self, cx: &mut Context<Self>) {
-    self.terminal.update(cx, |terminal, _cx| {
-      // terminal.copy();
-    });
+  /// 获取终端标题
+  pub fn title(&self, cx: &App) -> String {
+    self.terminal.read(cx).title().to_string()
   }
 }
 
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let terminal = self.terminal.clone();
-    let focus_handle = self.focus_handle.clone();
     let show_scroll_button =
       self.terminal.read(cx).user_has_scrolled() && !self.terminal.read(cx).scrolled_to_bottom();
 
@@ -169,7 +94,7 @@ impl Render for TerminalView {
       .bg(cx.theme().background)
       .cursor_text()
       .relative()
-      .child(TerminalElement::new(terminal.clone(), focus_handle.clone()))
+      .child(TerminalElement::new(terminal.clone()))
       .on_action(cx.listener(Self::on_action_tab))
       .on_action(cx.listener(Self::on_action_tab_prev))
       .on_key_down(cx.listener(|this, event, window, cx| {

@@ -1,5 +1,5 @@
 use crate::terminal::content::{
-  CursorState, IndexedCell, TerminalBounds, TerminalContent, TerminalEvent, TerminalPoint,
+  CursorState, IndexedCell, TerminalContent, TerminalEvent, TerminalPoint,
 };
 use crate::terminal::pty::{Pty, TerminalSize};
 use alacritty_terminal::event::EventListener;
@@ -14,8 +14,6 @@ use tracing::debug;
 
 /// 默认滚动历史行数
 const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
-/// 最大滚动历史行数
-pub const MAX_SCROLL_HISTORY_LINES: usize = 100_000;
 
 /// 终端尺寸结构，用于 alacritty 的 Dimensions trait
 #[derive(Clone, Copy, Debug)]
@@ -38,15 +36,6 @@ impl Dimensions for TermDimensions {
   }
 }
 
-impl From<TerminalBounds> for TermDimensions {
-  fn from(bounds: TerminalBounds) -> Self {
-    Self {
-      columns: bounds.num_columns(),
-      screen_lines: bounds.num_lines(),
-    }
-  }
-}
-
 impl From<TerminalSize> for TermDimensions {
   fn from(size: TerminalSize) -> Self {
     Self {
@@ -54,25 +43,6 @@ impl From<TerminalSize> for TermDimensions {
       screen_lines: size.rows as usize,
     }
   }
-}
-
-/// 内部事件（类似 Zed 的 InternalEvent）
-#[derive(Clone, Debug)]
-enum InternalEvent {
-  /// 调整终端大小
-  Resize(TerminalBounds),
-  /// 滚动
-  Scroll(alacritty_terminal::grid::Scroll),
-  /// 设置选区
-  SetSelection(Option<alacritty_terminal::selection::Selection>),
-  /// 更新选区
-  UpdateSelection(TerminalPoint),
-  /// 清除屏幕
-  Clear,
-  /// 复制选区
-  Copy,
-  /// 粘贴
-  Paste(String),
 }
 
 /// 终端事件监听器 - 使用 mpsc channel 转发 alacritty 事件到后台任务
@@ -110,13 +80,6 @@ impl Term {
 
   pub fn resize(&mut self, dimensions: &TermDimensions) {
     self.term.resize(*dimensions);
-  }
-
-  pub fn dimensions(&self) -> TermDimensions {
-    TermDimensions {
-      columns: self.term.columns() as usize,
-      screen_lines: self.term.screen_lines() as usize,
-    }
   }
 
   pub fn extract(&self) -> ExtractedTerminalData {
@@ -197,10 +160,7 @@ pub struct Terminal {
   term: Arc<Mutex<Term>>,
   pty: Arc<dyn Pty>,
   terminal_size: Option<TerminalSize>,
-  display_offset: usize,
-  selection_head: Option<TerminalPoint>,
   title: String,
-  mouse_mode: bool,
   user_has_scrolled: bool,
 }
 
@@ -257,7 +217,7 @@ impl Terminal {
           Event::Title(title) => {
             entity.update(cx, |terminal, cx| {
               terminal.title = title.clone();
-              cx.emit(TerminalEvent::TitleChanged(title));
+              cx.emit(TerminalEvent::TitleChanged);
             })?;
           }
           Event::PtyWrite(data) => {
@@ -289,22 +249,9 @@ impl Terminal {
       term,
       pty,
       terminal_size: None,
-      display_offset: 0,
-      selection_head: None,
       title: "Terminal".to_string(),
-      mouse_mode: false,
       user_has_scrolled: false,
     })
-  }
-
-  /// 创建仅显示的终端（无 PTY，用于测试或显示静态内容）
-  pub fn new_display_only(cx: &mut Context<Self>) -> anyhow::Result<Self> {
-    use crate::terminal::local_pty::LocalPty;
-
-    let size = TerminalSize::default_size();
-    let pty = LocalPty::new(size, None)?;
-
-    Self::new(Arc::new(pty), cx)
   }
 
   /// 发送输入数据到终端
@@ -369,40 +316,10 @@ impl Terminal {
     cx.notify();
   }
 
-  /// 向上滚动一行
-  pub fn scroll_line_up(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
-    use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Delta(1), user_initiated, cx);
-  }
-
-  /// 向下滚动一行
-  pub fn scroll_line_down(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
-    use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Delta(-1), user_initiated, cx);
-  }
-
   /// 滚动指定行数（正数向上，负数向下）
   pub fn scroll_lines(&mut self, lines: i32, user_initiated: bool, cx: &mut Context<Self>) {
     use alacritty_terminal::grid::Scroll;
     self.scroll(Scroll::Delta(lines), user_initiated, cx);
-  }
-
-  /// 向上滚动一页
-  pub fn scroll_page_up(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
-    use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::PageUp, user_initiated, cx);
-  }
-
-  /// 向下滚动一页
-  pub fn scroll_page_down(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
-    use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::PageDown, user_initiated, cx);
-  }
-
-  /// 滚动到顶部
-  pub fn scroll_to_top(&mut self, user_initiated: bool, cx: &mut Context<Self>) {
-    use alacritty_terminal::grid::Scroll;
-    self.scroll(Scroll::Top, user_initiated, cx);
   }
 
   /// 滚动到底部
@@ -424,11 +341,6 @@ impl Terminal {
   /// 用户是否手动滚动过（即不在自动跟随底部状态）
   pub fn user_has_scrolled(&self) -> bool {
     self.user_has_scrolled
-  }
-
-  /// 是否滚动到顶部
-  pub fn scrolled_to_top(&self) -> bool {
-    self.content.scrolled_to_top
   }
 
   /// 是否滚动到底部

@@ -7,7 +7,6 @@ use blocking::unblock;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::thread;
-use std::thread::JoinHandle;
 
 /// 写入命令枚举
 enum WriteCommand {
@@ -19,11 +18,8 @@ enum WriteCommand {
 ///
 /// 使用 `Arc<Mutex<_>>` 实现内部可变性，支持 `&self` 方法（类似 Zed 的设计）
 pub struct LocalPty {
-  process_id: Option<u32>,
   child: Box<dyn Child + Send + Sync>,
-  reader_handle: JoinHandle<Result<()>>,
   reader_rx: Receiver<Vec<u8>>,
-  writer_handle: JoinHandle<Result<()>>,
   writer_tx: Sender<WriteCommand>,
 }
 
@@ -69,7 +65,6 @@ impl LocalPty {
       .slave
       .spawn_command(cmd)
       .with_context(|| "Failed to spawn command in PTY")?;
-    let process_id = child.process_id();
 
     let master = pty_pair.master;
 
@@ -81,15 +76,12 @@ impl LocalPty {
     let (reader_tx, reader_rx) = unbounded::<Vec<u8>>();
     let (writer_tx, writer_rx) = unbounded::<WriteCommand>();
 
-    let reader_handle = run_reader(reader, reader_tx);
-    let writer_handle = run_writer(master, writer_rx)?;
+    run_reader(reader, reader_tx);
+    run_writer(master, writer_rx)?;
 
     Ok(Self {
-      process_id,
       child,
-      reader_handle,
       reader_rx,
-      writer_handle,
       writer_tx,
     })
   }
@@ -131,11 +123,6 @@ impl Pty for LocalPty {
 
     Ok(())
   }
-
-  /// 获取进程 ID
-  fn process_id(&self) -> Option<u32> {
-    self.process_id
-  }
 }
 
 impl Drop for LocalPty {
@@ -145,7 +132,7 @@ impl Drop for LocalPty {
   }
 }
 
-fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) -> JoinHandle<Result<()>> {
+fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) {
   // 启动读取线程
   thread::spawn(move || -> Result<()> {
     loop {
@@ -169,18 +156,15 @@ fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) -> JoinHand
       }
     }
     Ok(())
-  })
+  });
 }
 
-fn run_writer(
-  master: Box<dyn MasterPty + Send>,
-  rx: Receiver<WriteCommand>,
-) -> Result<JoinHandle<Result<()>>> {
+fn run_writer(master: Box<dyn MasterPty + Send>, rx: Receiver<WriteCommand>) -> Result<()> {
   let mut writer = master
     .take_writer()
     .with_context(|| "Failed to get PTY writer")?;
 
-  let write_handle = thread::spawn(move || -> Result<()> {
+  thread::spawn(move || -> Result<()> {
     loop {
       let cmd = rx.recv_blocking()?;
       match cmd {
@@ -193,8 +177,7 @@ fn run_writer(
         }
       }
     }
-    Ok(())
   });
 
-  Ok(write_handle)
+  Ok(())
 }

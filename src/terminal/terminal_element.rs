@@ -59,12 +59,11 @@ pub struct TerminalElement {
   content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
-  focus_handle: FocusHandle,
 }
 
 impl TerminalElement {
   /// 创建新的 TerminalElement
-  pub fn new(terminal: Entity<Terminal>, focus_handle: FocusHandle) -> Self {
+  pub fn new(terminal: Entity<Terminal>) -> Self {
     // 初始化时使用空内容，prepaint 时会从 Terminal 读取
     let initial_content = TerminalContent::new();
 
@@ -73,7 +72,6 @@ impl TerminalElement {
       content: initial_content,
       char_width: px(8.),
       char_height: px(16.),
-      focus_handle,
     }
   }
 

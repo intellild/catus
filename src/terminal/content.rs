@@ -1,6 +1,6 @@
 use alacritty_terminal::{
   index::{Column, Line},
-  term::{RenderableCursor, TermMode, cell::Cell},
+  term::{TermMode, cell::Cell},
   vte::ansi::Color as AnsiColor,
 };
 use gpui::*;
@@ -8,10 +8,8 @@ use gpui::*;
 /// 终端事件
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
-  /// 终端内容变化，需要重绘
-  Wakeup,
   /// 标题变化
-  TitleChanged(String),
+  TitleChanged,
   /// 终端铃声
   Bell,
   /// 关闭终端
@@ -30,64 +28,6 @@ pub struct IndexedCell {
 pub struct TerminalPoint {
   pub line: Line,
   pub column: Column,
-}
-
-/// 选区范围
-#[derive(Clone, Debug)]
-pub struct SelectionRange {
-  pub start: TerminalPoint,
-  pub end: TerminalPoint,
-}
-
-/// 选区类型
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectionType {
-  /// 简单选区（字符级）
-  Simple,
-  /// 块选区（矩形）
-  Block,
-  /// 语义选区（单词）
-  Semantic,
-  /// 行选区
-  Lines,
-}
-
-/// 终端边界信息
-#[derive(Clone, Copy, Debug)]
-pub struct TerminalBounds {
-  pub cell_width: Pixels,
-  pub line_height: Pixels,
-  pub bounds: Bounds<Pixels>,
-  pub rows: usize,
-  pub cols: usize,
-}
-
-impl TerminalBounds {
-  pub fn new(
-    cell_width: Pixels,
-    line_height: Pixels,
-    bounds: Bounds<Pixels>,
-    rows: usize,
-    cols: usize,
-  ) -> Self {
-    Self {
-      cell_width,
-      line_height,
-      bounds,
-      rows,
-      cols,
-    }
-  }
-
-  /// 计算行数
-  pub fn num_lines(&self) -> usize {
-    self.rows
-  }
-
-  /// 计算列数
-  pub fn num_columns(&self) -> usize {
-    self.cols
-  }
 }
 
 /// 可渲染的光标状态
@@ -112,13 +52,9 @@ pub struct TerminalContent {
   pub cells: Vec<IndexedCell>,
   pub mode: TermMode,
   pub display_offset: usize,
-  pub selection: Option<SelectionRange>,
   pub cursor: CursorState,
   pub cursor_char: char,
-  pub terminal_bounds: TerminalBounds,
-  pub scrolled_to_top: bool,
   pub scrolled_to_bottom: bool,
-  pub title: String,
 }
 
 impl TerminalContent {
@@ -128,53 +64,16 @@ impl TerminalContent {
       cells: Vec::new(),
       mode: TermMode::default(),
       display_offset: 0,
-      selection: None,
       cursor: CursorState::default(),
       cursor_char: ' ',
-      terminal_bounds: TerminalBounds::new(px(8.), px(16.), Bounds::default(), 24, 80),
-      scrolled_to_top: true,
       scrolled_to_bottom: true,
-      title: "Terminal".to_string(),
     }
-  }
-
-  /// 更新终端内容
-  pub fn update_from_cells(
-    &mut self,
-    cells: Vec<IndexedCell>,
-    cursor: CursorState,
-    cursor_char: char,
-  ) {
-    self.cells = cells;
-    self.cursor = cursor;
-    self.cursor_char = cursor_char;
-  }
-
-  /// 设置终端标题
-  pub fn set_title(&mut self, title: String) {
-    self.title = title;
-  }
-
-  /// 设置边界
-  pub fn set_bounds(&mut self, bounds: TerminalBounds) {
-    self.terminal_bounds = bounds;
   }
 }
 
 impl Default for TerminalContent {
   fn default() -> Self {
     Self::new()
-  }
-}
-
-/// 将 alacritty 的 RenderableCursor 转换为 CursorState
-pub fn renderable_cursor_to_state(cursor: &RenderableCursor) -> CursorState {
-  CursorState {
-    point: TerminalPoint {
-      line: cursor.point.line,
-      column: cursor.point.column,
-    },
-    shape: cursor.shape,
   }
 }
 
