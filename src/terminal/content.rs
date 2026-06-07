@@ -30,6 +30,50 @@ pub struct TerminalPoint {
   pub column: Column,
 }
 
+/// 选择范围
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectionRange {
+  pub start: TerminalPoint,
+  pub end: TerminalPoint,
+}
+
+impl SelectionRange {
+  /// 规范化选择范围，确保 start <= end
+  pub fn normalized(self) -> (TerminalPoint, TerminalPoint) {
+    let mut start = self.start;
+    let mut end = self.end;
+
+    if start.line.0 > end.line.0 || (start.line.0 == end.line.0 && start.column.0 > end.column.0) {
+      std::mem::swap(&mut start, &mut end);
+    }
+
+    (start, end)
+  }
+
+  /// 检查指定点是否在选择范围内
+  pub fn contains(self, point: TerminalPoint) -> bool {
+    let (start, end) = self.normalized();
+
+    if point.line.0 < start.line.0 || point.line.0 > end.line.0 {
+      return false;
+    }
+
+    if point.line.0 == start.line.0 && point.line.0 == end.line.0 {
+      return point.column.0 >= start.column.0 && point.column.0 <= end.column.0;
+    }
+
+    if point.line.0 == start.line.0 {
+      return point.column.0 >= start.column.0;
+    }
+
+    if point.line.0 == end.line.0 {
+      return point.column.0 <= end.column.0;
+    }
+
+    true
+  }
+}
+
 /// 可渲染的光标状态
 #[derive(Clone, Debug)]
 pub struct CursorState {
@@ -55,6 +99,7 @@ pub struct TerminalContent {
   pub cursor: CursorState,
   pub cursor_char: char,
   pub scrolled_to_bottom: bool,
+  pub selection: Option<SelectionRange>,
 }
 
 impl TerminalContent {
@@ -67,6 +112,7 @@ impl TerminalContent {
       cursor: CursorState::default(),
       cursor_char: ' ',
       scrolled_to_bottom: true,
+      selection: None,
     }
   }
 }

@@ -13,6 +13,7 @@ pub struct LayoutState {
   char_height: Pixels,
   background_color: Hsla,
   cursor_visible: bool,
+  hitbox: Hitbox,
 }
 
 /// 批处理的文本运行（类似 Zed 的 BatchedTextRun）
@@ -305,6 +306,8 @@ impl Element for TerminalElement {
     let content = self.terminal.read(cx).content().clone();
     self.content = content.clone();
 
+    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+
     LayoutState {
       bounds,
       content,
@@ -312,6 +315,7 @@ impl Element for TerminalElement {
       char_height: self.char_height,
       background_color: cx.theme().background,
       cursor_visible: true,
+      hitbox,
     }
   }
 
@@ -351,6 +355,24 @@ impl Element for TerminalElement {
       }
 
       Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
+    }
+
+    // 绘制选择高亮背景
+    if let Some(selection) = content.selection {
+      for indexed in &content.cells {
+        if selection.contains(indexed.point) {
+          let row = indexed.point.line.0 as usize;
+          let col = indexed.point.column.0 as usize;
+          let selection_bounds = Bounds {
+            origin: Point::new(
+              origin.x + col as f32 * char_width,
+              origin.y + row as f32 * char_height,
+            ),
+            size: Size::new(char_width, char_height),
+          };
+          window.paint_quad(fill(selection_bounds, gpui::rgba(0x3b82f680)));
+        }
+      }
     }
 
     // 批处理绘制文本
@@ -406,6 +428,61 @@ impl Element for TerminalElement {
         cx,
       );
     }
+
+    // 鼠标事件处理
+    let terminal = self.terminal.clone();
+    let bounds = layout.bounds;
+    let char_width = layout.char_width;
+    let char_height = layout.char_height;
+    let hitbox = layout.hitbox.clone();
+
+    // 鼠标按下：开始选择
+    window.on_mouse_event({
+      let terminal = terminal.clone();
+      move |event: &MouseDownEvent, phase, window, cx| {
+        if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) {
+          let point =
+            terminal
+              .read(cx)
+              .point_from_pixel(event.position, bounds, char_width, char_height);
+          terminal.update(cx, |terminal, cx| {
+            if event.click_count == 2 {
+              terminal.select_word_at(point, cx);
+            } else {
+              terminal.set_selection_start(point, cx);
+            }
+          });
+          cx.stop_propagation();
+        }
+      }
+    });
+
+    // 鼠标移动：更新选择
+    window.on_mouse_event({
+      let terminal = terminal.clone();
+      move |event: &MouseMoveEvent, phase, _window, cx| {
+        if phase.bubble() && event.pressed_button == Some(MouseButton::Left) {
+          let point =
+            terminal
+              .read(cx)
+              .point_from_pixel(event.position, bounds, char_width, char_height);
+          terminal.update(cx, |terminal, cx| {
+            terminal.set_selection_end(point, cx);
+          });
+          cx.stop_propagation();
+        }
+      }
+    });
+
+    // 鼠标释放：完成选择
+    window.on_mouse_event({
+      let _terminal = terminal.clone();
+      move |event: &MouseUpEvent, phase, _window, cx| {
+        if phase.bubble() && event.button == MouseButton::Left {
+          cx.stop_propagation();
+        }
+      }
+    });
   }
 }
 

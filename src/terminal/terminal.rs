@@ -1,9 +1,10 @@
 use crate::terminal::content::{
-  CursorState, IndexedCell, TerminalContent, TerminalEvent, TerminalPoint,
+  CursorState, IndexedCell, SelectionRange, TerminalContent, TerminalEvent, TerminalPoint,
 };
 use crate::terminal::pty::{Pty, TerminalSize};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use async_channel::{Sender, unbounded};
@@ -162,6 +163,7 @@ pub struct Terminal {
   terminal_size: Option<TerminalSize>,
   title: String,
   user_has_scrolled: bool,
+  selection: Option<SelectionRange>,
 }
 
 impl Terminal {
@@ -251,12 +253,14 @@ impl Terminal {
       terminal_size: None,
       title: "Terminal".to_string(),
       user_has_scrolled: false,
+      selection: None,
     })
   }
 
   /// 发送输入数据到终端
   pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>) {
     self.scroll_to_bottom(false, cx);
+    self.clear_selection(cx);
 
     let pty = self.pty.clone();
     cx.spawn(async move |_, _| pty.write(data).await).detach();
@@ -348,6 +352,147 @@ impl Terminal {
     self.content.scrolled_to_bottom
   }
 
+  /// 设置选择起点
+  pub fn set_selection_start(&mut self, point: TerminalPoint, cx: &mut Context<Self>) {
+    self.selection = Some(SelectionRange {
+      start: point,
+      end: point,
+    });
+    cx.notify();
+  }
+
+  /// 设置选择终点
+  pub fn set_selection_end(&mut self, point: TerminalPoint, cx: &mut Context<Self>) {
+    if let Some(ref mut selection) = self.selection {
+      selection.end = point;
+      cx.notify();
+    }
+  }
+
+  /// 清除选择
+  pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+    if self.selection.take().is_some() {
+      cx.notify();
+    }
+  }
+
+  /// 获取当前选择
+  pub fn selection(&self) -> Option<SelectionRange> {
+    self.selection
+  }
+
+  /// 将像素坐标转换为终端坐标
+  pub fn point_from_pixel(
+    &self,
+    position: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    char_width: Pixels,
+    char_height: Pixels,
+  ) -> TerminalPoint {
+    let relative_x = (position.x - bounds.origin.x).max(px(0.));
+    let relative_y = (position.y - bounds.origin.y).max(px(0.));
+    let col = (relative_x / char_width).floor() as usize;
+    let row = (relative_y / char_height).floor() as usize;
+    TerminalPoint {
+      line: alacritty_terminal::index::Line(row as i32),
+      column: alacritty_terminal::index::Column(col),
+    }
+  }
+
+  /// 双击选中单词
+  pub fn select_word_at(&mut self, point: TerminalPoint, cx: &mut Context<Self>) {
+    let cells = &self.content.cells;
+    let row = point.line.0;
+
+    let mut row_cells: Vec<_> = cells
+      .iter()
+      .filter(|c| c.point.line.0 == row && !c.cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+      .collect();
+    row_cells.sort_by_key(|c| c.point.column.0);
+
+    let clicked_idx = row_cells
+      .iter()
+      .position(|c| c.point.column.0 == point.column.0)
+      .unwrap_or(0);
+
+    let clicked_char = row_cells.get(clicked_idx).map(|c| c.cell.c).unwrap_or(' ');
+
+    if is_word_boundary(clicked_char) {
+      self.selection = Some(SelectionRange {
+        start: point,
+        end: point,
+      });
+      cx.notify();
+      return;
+    }
+
+    let mut start_idx = clicked_idx;
+    for (i, _cell) in row_cells[..clicked_idx].iter().enumerate().rev() {
+      if is_word_boundary(row_cells[i].cell.c) {
+        start_idx = i + 1;
+        break;
+      }
+      start_idx = i;
+    }
+
+    let mut end_idx = clicked_idx;
+    for (i, _cell) in row_cells[clicked_idx + 1..].iter().enumerate() {
+      if is_word_boundary(row_cells[clicked_idx + 1 + i].cell.c) {
+        end_idx = clicked_idx + i;
+        break;
+      }
+      end_idx = clicked_idx + 1 + i;
+    }
+
+    let start_col = row_cells[start_idx].point.column.0;
+    let end_col = row_cells[end_idx].point.column.0;
+
+    self.selection = Some(SelectionRange {
+      start: TerminalPoint {
+        line: point.line,
+        column: alacritty_terminal::index::Column(start_col),
+      },
+      end: TerminalPoint {
+        line: point.line,
+        column: alacritty_terminal::index::Column(end_col),
+      },
+    });
+    cx.notify();
+  }
+
+  /// 获取选中的文本
+  pub fn selected_text(&self) -> String {
+    let Some(selection) = self.selection else {
+      return String::new();
+    };
+
+    let mut lines: std::collections::BTreeMap<i32, std::collections::BTreeMap<i32, char>> =
+      std::collections::BTreeMap::new();
+
+    for indexed in &self.content.cells {
+      if indexed.cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+        continue;
+      }
+      if selection.contains(indexed.point) {
+        let row = indexed.point.line.0;
+        let col = indexed.point.column.0 as i32;
+        lines.entry(row).or_default().insert(col, indexed.cell.c);
+      }
+    }
+
+    let mut text = String::new();
+    for (i, (_row, cols)) in lines.iter().enumerate() {
+      if i > 0 {
+        text.push('\n');
+      }
+      for (_col, c) in cols {
+        text.push(*c);
+      }
+    }
+
+    text
+  }
+
   /// 从 alacritty Term 提取最新内容并更新到 TerminalContent
   ///
   /// 在 prepaint 阶段调用，确保渲染前数据是最新的。
@@ -378,12 +523,20 @@ impl Terminal {
   }
 
   fn apply_extracted_data(&mut self, data: ExtractedTerminalData) {
-    self.content.cells = data.cells;
-    self.content.cursor = data.cursor_state;
-    self.content.cursor_char = data.cursor_char;
-    self.content.mode = data.mode;
-    self.content.display_offset = data.display_offset;
+    self.content = TerminalContent {
+      cells: data.cells,
+      mode: data.mode,
+      display_offset: data.display_offset,
+      cursor: data.cursor_state,
+      cursor_char: data.cursor_char,
+      scrolled_to_bottom: self.content.scrolled_to_bottom,
+      selection: self.selection,
+    };
   }
+}
+
+fn is_word_boundary(c: char) -> bool {
+  c.is_whitespace() || c.is_ascii_punctuation()
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}

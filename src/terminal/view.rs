@@ -3,7 +3,7 @@ use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use gpui_component::ActiveTheme;
 
-actions!(terminal, [Tab, TabPrev, ScrollToBottom]);
+actions!(terminal, [Tab, TabPrev, ScrollToBottom, CopySelection]);
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
@@ -34,6 +34,13 @@ impl TerminalView {
     self.terminal.update(cx, |terminal, cx| {
       terminal.input(cx, vec![0x1b, b'[', b'Z']);
     });
+  }
+
+  fn on_action_copy(&mut self, _: &CopySelection, _window: &mut Window, cx: &mut Context<Self>) {
+    let text = self.terminal.read(cx).selected_text();
+    if !text.is_empty() {
+      cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
   }
 
   fn handle_scroll_wheel(
@@ -97,6 +104,7 @@ impl Render for TerminalView {
       .child(TerminalElement::new(terminal.clone()))
       .on_action(cx.listener(Self::on_action_tab))
       .on_action(cx.listener(Self::on_action_tab_prev))
+      .on_action(cx.listener(Self::on_action_copy))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))

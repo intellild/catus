@@ -12,7 +12,7 @@ mod workspace;
 use app::App as CatusApp;
 use main_view::MainView;
 use pane::{ClosePane, SplitDown, SplitRight};
-use terminal::view::{Tab, TabPrev};
+use terminal::view::{CopySelection, Tab, TabPrev};
 
 fn main() {
   let app = Application::new().with_assets(gpui_component_assets::Assets);
@@ -24,6 +24,7 @@ fn main() {
     cx.bind_keys([
       KeyBinding::new("tab", Tab, Some("Terminal")),
       KeyBinding::new("shift-tab", TabPrev, Some("Terminal")),
+      KeyBinding::new("cmd-c", CopySelection, Some("Terminal")),
     ]);
 
     cx.bind_keys([
