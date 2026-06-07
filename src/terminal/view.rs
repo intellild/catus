@@ -3,7 +3,16 @@ use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use gpui_component::ActiveTheme;
 
-actions!(terminal, [Tab, TabPrev, ScrollToBottom, CopySelection]);
+actions!(
+  terminal,
+  [
+    Tab,
+    TabPrev,
+    ScrollToBottom,
+    CopySelection,
+    PasteFromClipboard
+  ]
+);
 
 /// Terminal view component using GPUI
 pub struct TerminalView {
@@ -43,6 +52,21 @@ impl TerminalView {
     }
   }
 
+  fn on_action_paste(
+    &mut self,
+    _: &PasteFromClipboard,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+      return;
+    };
+
+    self.terminal.update(cx, |terminal, cx| {
+      terminal.paste(cx, text);
+    });
+  }
+
   fn handle_scroll_wheel(
     &mut self,
     event: &ScrollWheelEvent,
@@ -75,6 +99,10 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
+    if event.keystroke.modifiers.platform {
+      return;
+    }
+
     let data = encode_keystroke(&event.keystroke);
 
     self.terminal.update(cx, |terminal, cx| {
@@ -101,10 +129,14 @@ impl Render for TerminalView {
       .bg(cx.theme().background)
       .cursor_text()
       .relative()
-      .child(TerminalElement::new(terminal.clone()))
+      .child(TerminalElement::new(
+        terminal.clone(),
+        self.focus_handle.clone(),
+      ))
       .on_action(cx.listener(Self::on_action_tab))
       .on_action(cx.listener(Self::on_action_tab_prev))
       .on_action(cx.listener(Self::on_action_copy))
+      .on_action(cx.listener(Self::on_action_paste))
       .on_key_down(cx.listener(|this, event, window, cx| {
         this.handle_key_down(event, window, cx);
       }))

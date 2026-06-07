@@ -259,11 +259,31 @@ impl Terminal {
 
   /// 发送输入数据到终端
   pub fn input(&mut self, cx: &mut Context<Self>, data: Vec<u8>) {
+    if data.is_empty() {
+      return;
+    }
+
     self.scroll_to_bottom(false, cx);
     self.clear_selection(cx);
 
     let pty = self.pty.clone();
     cx.spawn(async move |_, _| pty.write(data).await).detach();
+  }
+
+  /// 粘贴文本到终端
+  pub fn paste(&mut self, cx: &mut Context<Self>, text: String) {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let data = if self.content.mode.contains(TermMode::BRACKETED_PASTE) {
+      let mut data = Vec::with_capacity(normalized.len() + 12);
+      data.extend_from_slice(b"\x1b[200~");
+      data.extend_from_slice(normalized.as_bytes());
+      data.extend_from_slice(b"\x1b[201~");
+      data
+    } else {
+      normalized.into_bytes()
+    };
+
+    self.input(cx, data);
   }
 
   /// 根据视图实际尺寸同步终端行列数

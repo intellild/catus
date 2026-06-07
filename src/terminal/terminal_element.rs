@@ -60,11 +60,12 @@ pub struct TerminalElement {
   content: TerminalContent,
   char_width: Pixels,
   char_height: Pixels,
+  focus_handle: FocusHandle,
 }
 
 impl TerminalElement {
   /// 创建新的 TerminalElement
-  pub fn new(terminal: Entity<Terminal>) -> Self {
+  pub fn new(terminal: Entity<Terminal>, focus_handle: FocusHandle) -> Self {
     // 初始化时使用空内容，prepaint 时会从 Terminal 读取
     let initial_content = TerminalContent::new();
 
@@ -73,6 +74,7 @@ impl TerminalElement {
       content: initial_content,
       char_width: px(8.),
       char_height: px(16.),
+      focus_handle,
     }
   }
 
@@ -437,10 +439,12 @@ impl Element for TerminalElement {
     let hitbox = layout.hitbox.clone();
 
     // 鼠标按下：开始选择
+    let focus_handle = self.focus_handle.clone();
     window.on_mouse_event({
       let terminal = terminal.clone();
       move |event: &MouseDownEvent, phase, window, cx| {
         if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) {
+          window.focus(&focus_handle);
           let point =
             terminal
               .read(cx)
