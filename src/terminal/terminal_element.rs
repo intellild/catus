@@ -90,7 +90,11 @@ impl TerminalElement {
   }
 
   /// 计算并更新字符尺寸
+  /// 只在首次调用时实际计算，避免每次 prepaint 的浮点误差导致不必要的 resize
   fn calculate_char_dimensions(&mut self, window: &mut Window) {
+    if self.char_width != px(8.) || self.char_height != px(16.) {
+      return;
+    }
     let font = Self::create_font();
     let font_id = window.text_system().resolve_font(&font);
     if let Ok(advance) = window.text_system().advance(font_id, px(14.), 'm') {
@@ -206,6 +210,11 @@ impl TerminalElement {
 
       let mut fg = ansi_color_to_rgb(&cell.fg);
       let mut bg = ansi_color_to_rgb(&cell.bg);
+
+      // 处理暗淡（dim）标志
+      if cell.flags.contains(Flags::DIM) && !cell.flags.contains(Flags::BOLD) {
+        fg = [fg[0] / 2, fg[1] / 2, fg[2] / 2];
+      }
 
       // 处理反色（inverse）标志
       if cell.flags.contains(Flags::INVERSE) {
@@ -349,11 +358,17 @@ impl Element for TerminalElement {
       let col = indexed.point.column.0 as usize;
       let cell = &indexed.cell;
 
+      let mut fg = ansi_color_to_rgb(&cell.fg);
       let mut bg = ansi_color_to_rgb(&cell.bg);
+
+      // 处理暗淡（dim）标志
+      if cell.flags.contains(Flags::DIM) && !cell.flags.contains(Flags::BOLD) {
+        fg = [fg[0] / 2, fg[1] / 2, fg[2] / 2];
+      }
 
       // 处理反色（inverse）标志
       if cell.flags.contains(Flags::INVERSE) {
-        bg = ansi_color_to_rgb(&cell.fg);
+        bg = fg;
       }
 
       Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);

@@ -191,20 +191,14 @@ impl Terminal {
     // PTY 读取任务：「生产」侧
     // 从 PTY 获取原始数据 → VTE 解析写入 alacritty Term → notify UI 线程
     // 这里不提取渲染数据，提取放在 prepaint 阶段按需执行
-    // 批量合并短时间内的多个数据块，避免逐行闪烁渲染
     let event_term = term.clone();
     cx.spawn(async move |_, cx| -> Result<()> {
       let term = event_term;
       loop {
         let data = pty_reader.recv().await?;
         let term = term.clone();
-        let pty_reader_for_batch = pty_reader.clone();
         cx.background_spawn(async move {
-          let mut guard = term.lock().await;
-          guard.advance(&data);
-          while let Ok(more_data) = pty_reader_for_batch.try_recv() {
-            guard.advance(&more_data);
-          }
+          term.lock().await.advance(&data);
         })
         .await;
 

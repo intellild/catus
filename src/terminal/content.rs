@@ -129,39 +129,76 @@ pub fn ansi_color_to_rgb(color: &AnsiColor) -> [u8; 3] {
 
   match color {
     AnsiColor::Named(name) => match name {
+      // 标准色
       NamedColor::Black => [0, 0, 0],
-      NamedColor::Red => [255, 0, 0],
-      NamedColor::Green => [0, 255, 0],
-      NamedColor::Yellow => [255, 255, 0],
-      NamedColor::Blue => [0, 0, 255],
-      NamedColor::Magenta => [255, 0, 255],
-      NamedColor::Cyan => [0, 255, 255],
-      NamedColor::White => [255, 255, 255],
-      NamedColor::BrightBlack => [64, 64, 64],
-      NamedColor::BrightRed => [255, 64, 64],
-      NamedColor::BrightGreen => [64, 255, 64],
-      NamedColor::BrightYellow => [255, 255, 64],
-      NamedColor::BrightBlue => [64, 64, 255],
-      NamedColor::BrightMagenta => [255, 64, 255],
-      NamedColor::BrightCyan => [64, 255, 255],
+      NamedColor::Red => [205, 49, 49],
+      NamedColor::Green => [13, 188, 121],
+      NamedColor::Yellow => [229, 229, 16],
+      NamedColor::Blue => [36, 114, 200],
+      NamedColor::Magenta => [188, 63, 188],
+      NamedColor::Cyan => [17, 168, 205],
+      NamedColor::White => [229, 229, 229],
+      // 亮色
+      NamedColor::BrightBlack => [128, 128, 128],
+      NamedColor::BrightRed => [255, 85, 85],
+      NamedColor::BrightGreen => [85, 255, 85],
+      NamedColor::BrightYellow => [255, 255, 85],
+      NamedColor::BrightBlue => [85, 85, 255],
+      NamedColor::BrightMagenta => [255, 85, 255],
+      NamedColor::BrightCyan => [85, 255, 255],
       NamedColor::BrightWhite => [255, 255, 255],
+      // 暗淡色
+      NamedColor::DimBlack => [64, 64, 64],
+      NamedColor::DimRed => [103, 25, 25],
+      NamedColor::DimGreen => [7, 94, 61],
+      NamedColor::DimYellow => [115, 115, 8],
+      NamedColor::DimBlue => [18, 57, 100],
+      NamedColor::DimMagenta => [94, 32, 94],
+      NamedColor::DimCyan => [9, 84, 103],
+      NamedColor::DimWhite => [115, 115, 115],
+      // 特殊色
       NamedColor::Foreground => [212, 212, 212],
       NamedColor::Background => [30, 30, 30],
-      _ => [212, 212, 212],
+      NamedColor::Cursor => [255, 255, 255],
+      NamedColor::BrightForeground => [255, 255, 255],
+      NamedColor::DimForeground => [128, 128, 128],
     },
     AnsiColor::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
     AnsiColor::Indexed(idx) => {
-      // ANSI 256 色表简化处理
+      // ANSI 256 色表完整实现
       match idx {
+        // 标准色 0-7
         0 => [0, 0, 0],
-        1 => [255, 0, 0],
-        2 => [0, 255, 0],
-        3 => [255, 255, 0],
-        4 => [0, 0, 255],
-        5 => [255, 0, 255],
-        6 => [0, 255, 255],
-        7 => [255, 255, 255],
-        _ => [212, 212, 212],
+        1 => [205, 49, 49],
+        2 => [13, 188, 121],
+        3 => [229, 229, 16],
+        4 => [36, 114, 200],
+        5 => [188, 63, 188],
+        6 => [17, 168, 205],
+        7 => [229, 229, 229],
+        // 亮色 8-15
+        8 => [128, 128, 128],
+        9 => [255, 85, 85],
+        10 => [85, 255, 85],
+        11 => [255, 255, 85],
+        12 => [85, 85, 255],
+        13 => [255, 85, 255],
+        14 => [85, 255, 255],
+        15 => [255, 255, 255],
+        // 216 色立方 16-231
+        16..=231 => {
+          let i = *idx - 16;
+          let r = (i / 36) as usize;
+          let g = ((i % 36) / 6) as usize;
+          let b = (i % 6) as usize;
+          let values = [0u8, 95, 135, 175, 215, 255];
+          [values[r], values[g], values[b]]
+        }
+        // 灰度 232-255
+        232..=255 => {
+          let gray = 8 + (*idx - 232) * 10;
+          [gray, gray, gray]
+        }
       }
     }
   }

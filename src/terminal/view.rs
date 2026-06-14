@@ -104,10 +104,14 @@ impl TerminalView {
     }
 
     let data = encode_keystroke(&event.keystroke);
+    if data.is_empty() {
+      return;
+    }
 
     self.terminal.update(cx, |terminal, cx| {
       terminal.input(cx, data);
     });
+    cx.stop_propagation();
   }
 
   /// 获取终端标题
