@@ -1,27 +1,47 @@
-use crate::workspace::Workspace;
 use gpui::*;
 use gpui_component::button::Button;
 use gpui_component::notification::Notification;
 use gpui_component::tab::{Tab, TabBar, TabVariant};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, WindowExt};
 
+use crate::app::App;
+
 pub struct TitleBarTabs {
-  workspace: Entity<Workspace>,
+  app: Entity<App>,
 }
 
 impl TitleBarTabs {
-  pub fn new(workspace: Entity<Workspace>) -> Self {
-    Self { workspace }
+  pub fn new(app: Entity<App>) -> Self {
+    Self { app }
   }
-}
 
-impl TitleBarTabs {
+  /// 对当前激活的 workspace 执行操作；返回操作结果。
+  fn with_active_workspace<R>(
+    &self,
+    cx: &mut Context<Self>,
+    f: impl FnOnce(
+      &mut crate::workspace::Workspace,
+      &mut gpui::Context<crate::workspace::Workspace>,
+    ) -> R,
+  ) -> Option<R> {
+    self.app.update(cx, |app, cx| {
+      app
+        .active_workspace()
+        .map(|ws| ws.update(cx, |ws, cx| f(ws, cx)))
+    })
+  }
+
   fn handle_tab_click(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
-      let id = tab.id;
+    let id = self
+      .app
+      .read(cx)
+      .active_workspace()
+      .and_then(|ws| ws.read(cx).tabs.get(index))
+      .map(|tab| tab.id);
+    if let Some(id) = id {
       if self
-        .workspace
-        .update(cx, |workspace, _cx| workspace.activate_tab(id))
+        .with_active_workspace(cx, |ws, _| ws.activate_tab(id))
+        .unwrap_or(false)
       {
         cx.notify();
       }
@@ -29,11 +49,16 @@ impl TitleBarTabs {
   }
 
   fn handle_tab_close(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(tab) = self.workspace.read(cx).tabs.get(index) {
-      let id = tab.id;
+    let id = self
+      .app
+      .read(cx)
+      .active_workspace()
+      .and_then(|ws| ws.read(cx).tabs.get(index))
+      .map(|tab| tab.id);
+    if let Some(id) = id {
       if self
-        .workspace
-        .update(cx, |workspace, _cx| workspace.close_tab(id))
+        .with_active_workspace(cx, |ws, _| ws.close_tab(id))
+        .unwrap_or(false)
       {
         cx.notify();
       }
@@ -41,22 +66,27 @@ impl TitleBarTabs {
   }
 
   fn handle_add_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    if let Err(error_msg) = self
-      .workspace
-      .update(cx, |workspace, cx| workspace.add_terminal_tab(cx))
-    {
-      window.push_notification(Notification::error(error_msg), cx);
-    } else {
-      cx.notify();
+    let result = self.with_active_workspace(cx, |ws, cx| ws.add_terminal_tab(cx));
+    match result {
+      Some(Err(error_msg)) => {
+        window.push_notification(Notification::error(error_msg), cx);
+      }
+      Some(Ok(_)) => cx.notify(),
+      None => {}
     }
   }
 }
 
 impl Render for TitleBarTabs {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let workspace = self.workspace.read(cx);
-    let tabs = &workspace.tabs;
-    let active_index = workspace.active_index().unwrap_or(0);
+    let active_workspace = self.app.read(cx).active_workspace();
+    let (tabs_len, active_index) = match active_workspace {
+      Some(ws) => {
+        let ws = ws.read(cx);
+        (ws.tabs.len(), ws.active_index().unwrap_or(0))
+      }
+      None => (0, 0),
+    };
 
     div()
       .flex()
@@ -68,12 +98,15 @@ impl Render for TitleBarTabs {
           .on_click(cx.listener(|this, ix: &usize, window, cx| {
             this.handle_tab_click(*ix, window, cx);
           }))
-          .children(tabs.iter().enumerate().map(|(_ix, tab)| {
-            let state = tab.state.read(cx);
-            let tab_icon = state.icon.clone();
+          .children((0..tabs_len).map(|_ix| {
+            // 当前 workspace 的每个 tab 渲染一个 Tab。
+            let icon = active_workspace
+              .and_then(|ws| ws.read(cx).tabs.get(_ix))
+              .map(|tab| tab.state.read(cx).icon.clone())
+              .unwrap_or(IconName::SquareTerminal);
             let title: SharedString = "Terminal".into();
 
-            Tab::new().label(title).icon(tab_icon).suffix(
+            Tab::new().label(title).icon(icon).suffix(
               div()
                 .id("tab-close")
                 .flex()

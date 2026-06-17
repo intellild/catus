@@ -1,13 +1,16 @@
 use gpui::*;
 use gpui_component::{Root, Theme, ThemeMode};
 
+mod add_workspace_dialog;
 mod app;
 mod id;
 mod main_view;
 mod pane;
+mod sidebar;
 mod terminal;
 mod title_bar;
 mod workspace;
+mod workspace_kind;
 
 use app::App as CatusApp;
 use main_view::MainView;
@@ -35,7 +38,6 @@ fn main() {
     ]);
 
     let catus_app = cx.new(|cx| CatusApp::new(cx));
-    let workspace = catus_app.read(cx).workspace().clone();
 
     cx.open_window(
       WindowOptions {
@@ -49,7 +51,7 @@ fn main() {
       |window, cx| {
         cx.activate(true);
 
-        let view = cx.new(|cx| MainView::new(workspace, cx));
+        let view = cx.new(|cx| MainView::new(catus_app.clone(), cx));
         cx.new(|cx| Root::new(view, window, cx))
       },
     )

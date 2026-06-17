@@ -4,12 +4,13 @@
 
 Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已实现：
 
-- 多 Tab 工作区。
-- Pane 水平/垂直分割。
+- 多 Workspace：左侧侧边栏列出所有 Workspace，可切换/关闭/新增。
+- Workspace 可以是本地的（系统默认 shell）或 SSH（启动 `ssh` 等本地进程作为命令）。
+- 每个 Workspace 内多 Tab、Pane 水平/垂直分割。
 - 本地 PTY 终端会话。
 - 终端输入、滚动、选择、复制和粘贴。
 
-当前仓库没有 SFTP 实现，也没有 Tokio 运行时依赖；不要在文档或实现里假设这些能力已经存在。
+当前仓库没有 SFTP 实现，也没有 Tokio 运行时依赖；不要在文档或实现里假设这些能力已经存在。SSH workspace 复用 `LocalPty`，只是把启动命令换成 `ssh`，不是远程 PTY。
 
 ## 技术栈
 
@@ -21,8 +22,12 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 ## 关键目录
 
 - `src/main.rs`: 应用初始化、主题设置、全局 key binding。
-- `src/app.rs`: 应用级状态，目前持有一个 `Workspace`。
-- `src/workspace.rs`: Tab 管理和终端实体创建。
+- `src/app.rs`: 应用级状态，持有多个 `Workspace` 与激活索引。
+- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `Ssh`），决定 workspace 的图标、展示名和 PTY 启动命令。
+- `src/workspace.rs`: 单个 `Workspace`：Tab 管理和终端实体创建，按 `kind.command()` 创建 PTY。
+- `src/sidebar/mod.rs`: 左侧 `WorkspaceSidebar`，列出 workspace 列表、切换/关闭/新增。
+- `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，选择类型并填写命令。
+- `src/main_view.rs`: 主视图，组合侧边栏与当前 workspace 的 title bar + pane 区，render 时从 `App` 解析激活的 workspace。
 - `src/pane/`: Pane tree、分割和关闭逻辑。
 - `src/terminal/terminal.rs`: `Terminal` 协调器，连接 PTY、alacritty 状态和渲染状态。
 - `src/terminal/local_pty.rs`: 本地 PTY 实现，使用独立 reader/writer 线程处理阻塞 I/O。
@@ -38,6 +43,8 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - 保持“生产/消费分离”：后台 PTY reader 只推进 alacritty 状态；可见 UI 帧才提取可渲染数据。
 - `LocalPty` 使用 `std::thread::spawn` 处理阻塞读写，通过 `async_channel` 与 UI/任务侧通信。
 - `Pty` trait 使用 `&self` 的 async 方法，内部可变性由具体实现负责。
+- `Workspace::create_terminal_entity` 是创建终端的唯一入口，用 `kind.command()` 作为 `LocalPty::new` 的命令；`None` 表示系统默认 shell，`Some("ssh ...")` 用于 SSH workspace。
+- `MainView` 在 render 时从 `App::active_workspace()` 解析当前 workspace，因此切换 workspace 不需要重建 title bar / pane。
 
 ## GPUI 约定
 

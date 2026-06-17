@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui::{App, AppContext, Entity};
+use gpui::{App, AppContext, Entity, SharedString};
 use gpui_component::IconName;
 
 use crate::id::ID;
 use crate::pane::PaneGroup;
 use crate::terminal::{LocalPty, Terminal, TerminalSize, TerminalView};
+use crate::workspace_kind::WorkspaceKind;
 
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -37,36 +38,50 @@ pub struct TabItem {
 }
 
 pub struct Workspace {
+  pub kind: WorkspaceKind,
   pub tabs: Vec<TabItem>,
   pub active_tab_id: Option<TabId>,
   terminals: HashMap<ID<Terminal>, Entity<Terminal>>,
 }
 
 impl Workspace {
-  pub fn new(cx: &mut gpui::Context<Self>) -> Self {
+  pub fn new(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
     let mut terminals = HashMap::new();
     let terminal_id = ID::<Terminal>::generate();
 
-    let terminal = match Self::create_terminal_entity(cx, terminal_id, &mut terminals, 24, 80) {
-      Ok(t) => t,
-      Err(e) => {
-        eprintln!("Failed to create default terminal: {}", e);
-        return Self {
-          tabs: vec![],
-          active_tab_id: None,
-          terminals,
-        };
-      }
-    };
+    let terminal =
+      match Self::create_terminal_entity(cx, terminal_id, &mut terminals, 24, 80, &kind) {
+        Ok(t) => t,
+        Err(e) => {
+          eprintln!("Failed to create default terminal: {}", e);
+          return Self {
+            kind,
+            tabs: vec![],
+            active_tab_id: None,
+            terminals,
+          };
+        }
+      };
 
     let tab = Self::make_tab(cx, terminal, &terminals);
     let active_tab_id = Some(tab.id);
 
     Self {
+      kind,
       tabs: vec![tab],
       active_tab_id,
       terminals,
     }
+  }
+
+  /// 侧边栏展示用的名称。
+  pub fn display_name(&self) -> SharedString {
+    self.kind.display_name()
+  }
+
+  /// 侧边栏展示用的图标。
+  pub fn icon(&self) -> IconName {
+    self.kind.icon()
   }
 
   fn make_tab(
@@ -86,7 +101,7 @@ impl Workspace {
 
   pub fn create_terminal(&mut self, cx: &mut App) -> Result<Entity<Terminal>, String> {
     let terminal_id = ID::<Terminal>::generate();
-    Self::create_terminal_entity(cx, terminal_id, &mut self.terminals, 24, 80)
+    Self::create_terminal_entity(cx, terminal_id, &mut self.terminals, 24, 80, &self.kind)
   }
 
   pub fn add_tab(&mut self, tab: TabItem) -> TabId {
@@ -140,9 +155,11 @@ impl Workspace {
     terminals: &mut HashMap<ID<Terminal>, Entity<Terminal>>,
     rows: usize,
     cols: usize,
+    kind: &WorkspaceKind,
   ) -> Result<Entity<Terminal>, String> {
     let size = TerminalSize::new(rows as u16, cols as u16, 0, 0);
-    let pty = LocalPty::new(size, None).map_err(|e| format!("Failed to create PTY: {}", e))?;
+    let pty =
+      LocalPty::new(size, kind.command()).map_err(|e| format!("Failed to create PTY: {}", e))?;
     let terminal_entity =
       cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
     terminals.insert(terminal_id, terminal_entity.clone());
