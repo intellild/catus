@@ -102,7 +102,7 @@ impl Render for TitleBarTabs {
             // 当前 workspace 的每个 tab 渲染一个 Tab。
             let (icon, title) = active_workspace
               .and_then(|ws| ws.read(cx).tabs.get(ix))
-              .and_then(|tab| tab.pane_group.read(cx).first_leaf_title(cx))
+              .and_then(|tab| tab.pane_group.read(cx).active_leaf_title(cx))
               .map(|title| (IconName::SquareTerminal, title))
               .unwrap_or((IconName::SquareTerminal, "Terminal".to_string()));
             let title: SharedString = title.into();

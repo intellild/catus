@@ -115,6 +115,15 @@ impl PaneNode {
     }
   }
 
+  /// 按 ID 查找叶子节点的视图。
+  pub fn find_view_by_id(&self, target: PaneLeafId) -> Option<&PaneView> {
+    match self {
+      PaneNode::Leaf { id, view } if *id == target => Some(view),
+      PaneNode::Leaf { .. } => None,
+      PaneNode::Split { children, .. } => children.iter().find_map(|c| c.find_view_by_id(target)),
+    }
+  }
+
   /// 按视图查找叶子节点的 ID。
   pub fn find_leaf_id_by_view(&self, target: &PaneView) -> Option<PaneLeafId> {
     match self {

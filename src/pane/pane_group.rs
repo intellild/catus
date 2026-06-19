@@ -34,14 +34,20 @@ impl PaneGroup {
     }
   }
 
-  /// 订阅 TerminalView 事件，子进程退出时自动关闭对应 pane。
+  /// 订阅 TerminalView 事件：标题变更时重新渲染，子进程退出时自动关闭对应 pane。
   fn subscribe_to_view(cx: &mut Context<Self>, view: &Entity<TerminalView>) {
     let view_clone = view.clone();
-    cx.subscribe(view, move |this, _view, event: &TerminalViewEvent, cx| {
-      if matches!(event, TerminalViewEvent::Closed) {
-        this.close_leaf_by_view(&view_clone, cx);
-      }
-    })
+    cx.subscribe(
+      view,
+      move |this, _view, event: &TerminalViewEvent, cx| match event {
+        TerminalViewEvent::TitleChanged => {
+          cx.notify();
+        }
+        TerminalViewEvent::Closed => {
+          this.close_leaf_by_view(&view_clone, cx);
+        }
+      },
+    )
     .detach();
   }
 
@@ -111,9 +117,13 @@ impl PaneGroup {
     cx.notify();
   }
 
-  /// 获取第一个叶子节点的终端标题（用于 tab 标题）。
-  pub fn first_leaf_title(&self, cx: &App) -> Option<String> {
-    self.root.first_leaf_view().map(|v| v.title(cx))
+  /// 获取当前激活叶子节点的终端标题（用于 tab 标题）。
+  pub fn active_leaf_title(&self, cx: &App) -> Option<String> {
+    self
+      .active_leaf_id
+      .and_then(|id| self.root.find_view_by_id(id))
+      .map(|v| v.title(cx))
+      .or_else(|| self.root.first_leaf_view().map(|v| v.title(cx)))
   }
 
   fn on_action_split_right(&mut self, _: &SplitRight, _: &mut Window, cx: &mut Context<Self>) {

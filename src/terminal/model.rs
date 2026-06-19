@@ -221,10 +221,15 @@ impl Terminal {
 
         match event {
           Event::Title(title) => {
+            // 忽略空标题，避免覆盖已有标题
+            if title.trim().is_empty() {
+              continue;
+            }
             if entity
               .update(cx, |terminal, cx| {
                 terminal.title = title.clone();
                 cx.emit(TerminalEvent::TitleChanged);
+                cx.notify();
               })
               .is_err()
             {
