@@ -1,8 +1,10 @@
 use gpui::*;
 use gpui_component::{Root, Theme, ThemeMode};
+use tracing::info;
 
 mod add_workspace_dialog;
 mod app;
+mod logging;
 mod main_view;
 mod pane;
 mod sidebar;
@@ -17,6 +19,9 @@ use pane::{ClosePane, SplitDown, SplitRight};
 use terminal::view::{CopySelection, PasteFromClipboard, Tab, TabPrev};
 
 fn main() {
+  logging::init();
+  info!(target: "catus", "starting catus");
+
   let app = Application::new().with_assets(gpui_component_assets::Assets);
 
   app.run(move |cx| {

@@ -8,3 +8,6 @@ temp
 # Midscene visual tests (e2e)
 node_modules
 midscene_run
+# e2e debug logs (written when CATUS_LOG_DIR is set)
+.e2e-debug
+logs

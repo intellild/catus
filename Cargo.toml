@@ -17,6 +17,7 @@ portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1.89"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 # 启用 gpui 的测试支持（TestAppContext / #[gpui::test] 等）。

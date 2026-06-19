@@ -84,6 +84,29 @@ pnpm test:watch  # same, in watch mode
 
 Midscene writes HTML reports and dumps under `midscene_run/` (git-ignored).
 
+### Debug logging
+
+The catus binary logs via `tracing`. Its output target is controlled by the
+`CATUS_LOG_DIR` environment variable:
+
+- **Set `CATUS_LOG_DIR`** to a directory path → the app writes its logs to
+  `<dir>/catus.log`. The e2e harness writes its orchestration log to
+  `<dir>/e2e.log` (each AI action/assert, query results, and the catus process
+  stdout/stderr). This is the recommended way to diagnose flaky visual tests.
+- **Unset** → the app logs to the standard streams: `WARN`/`ERROR` to stderr,
+  `INFO`/`DEBUG`/`TRACE` to stdout. Useful when running `catus` directly from a
+  terminal.
+
+```bash
+CATUS_LOG_DIR=logs pnpm test   # capture both e2e.log and catus.log under logs/
+./target/debug/catus           # logs go to stdout/stderr
+```
+
+The log level is controlled by `RUST_LOG` (default `catus=debug,warn` when
+`CATUS_LOG_DIR` is set, otherwise `catus=info,warn`). The default `logs/` and
+`.e2e-debug/` directories are git-ignored; if you point `CATUS_LOG_DIR`
+elsewhere, make sure that path is ignored too.
+
 ## Disclaimer
 
 > **This project is vibe coded without careful review. Use it at your own risk.**

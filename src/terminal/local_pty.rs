@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::thread;
+use tracing::{debug, info, warn};
 
 /// 写入命令枚举
 enum WriteCommand {
@@ -46,6 +47,7 @@ impl LocalPty {
 
     // 构造要执行的命令
     let cmd = build_command(command);
+    debug!(target: "catus", "spawning PTY command: {:?}", cmd.get_argv());
 
     let child = pty_pair
       .slave
@@ -71,6 +73,8 @@ impl LocalPty {
 
     run_reader(reader, reader_tx);
     run_writer(master, writer, writer_rx);
+
+    info!(target: "catus", "local PTY created");
 
     Ok(Self {
       child,
@@ -156,7 +160,7 @@ fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) {
           }
         }
         Err(e) => {
-          eprintln!("PTY read error: {}", e);
+          warn!(target: "catus", "PTY read error: {}", e);
           break;
         }
       }

@@ -1,4 +1,5 @@
 use gpui::{AppContext, Entity};
+use tracing::info;
 
 use crate::workspace::Workspace;
 use crate::workspace_kind::WorkspaceKind;
@@ -54,6 +55,7 @@ impl App {
     Self::observe_workspace(&workspace, cx);
     self.workspaces.push(workspace.clone());
     self.active_index = Some(self.workspaces.len() - 1);
+    info!(target: "catus", "added workspace (index {}, total {})", self.workspaces.len() - 1, self.workspaces.len());
     cx.notify();
     Ok(workspace)
   }
@@ -62,6 +64,7 @@ impl App {
   pub fn activate_workspace(&mut self, index: usize, cx: &mut gpui::Context<Self>) -> bool {
     if index < self.workspaces.len() {
       self.active_index = Some(index);
+      info!(target: "catus", "activated workspace index {}", index);
       cx.notify();
       true
     } else {
@@ -82,6 +85,7 @@ impl App {
       Some(active) if active > index => Some(active - 1),
       other => other,
     };
+    info!(target: "catus", "closed workspace index {} (remaining {})", index, self.workspaces.len());
     cx.notify();
     true
   }
