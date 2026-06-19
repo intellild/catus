@@ -69,7 +69,11 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 ## 开发要求
 
-- 代码变更后运行 `cargo fmt`。
+- 修改完成后必须依次运行以下命令并全部通过，确保正确性：
+  - `cargo fmt`（格式化；验证可用 `cargo fmt --check`）
+  - `cargo build`（确保可编译）
+  - `cargo clippy --features test-support --all-targets -- -D warnings`（clippy 把 warning 视为 error）
+  - `cargo test --features test-support`（测试全过）
 - Rust 行为变更后至少运行 `cargo check`；涉及终端输入、PTY、pane 或 tab 的变更应补充更具体的验证。
 - 运行测试用 `cargo test --features test-support`。该 feature 启用 gpui 的 `test-support`，提供 `TestAppContext` / `#[gpui::test]`。纯逻辑测试用内置 `#[test]`，需要异步或 GPUI 实体的测试用 `#[gpui::test]`。
 - 测试中需要终端时优先用 `FakePty`（`crate::terminal::FakePty`）而非 `LocalPty`，避免启动真实 shell。`Workspace` 与 `App` 各有 `#[cfg(test)]` 构造函数（`new_with_fake_pty` / `with_workspaces`）复用 `FakePty`。
