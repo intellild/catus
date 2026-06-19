@@ -198,3 +198,82 @@ fn render_kind_button(
       }
     })
 }
+
+#[cfg(test)]
+mod tests {
+  use super::{DialogKind, build_kind};
+  use crate::workspace_kind::WorkspaceKind;
+  use gpui_component::IconName;
+
+  #[test]
+  fn local_with_empty_command_yields_local() {
+    let kind = build_kind(DialogKind::Local, "");
+    assert!(matches!(kind, WorkspaceKind::Local));
+  }
+
+  #[test]
+  fn local_with_whitespace_command_yields_local() {
+    let kind = build_kind(DialogKind::Local, "   ");
+    assert!(matches!(kind, WorkspaceKind::Local));
+  }
+
+  #[test]
+  fn local_with_custom_command_yields_ssh_variant() {
+    // Local 下填了自定义命令，统一走启动本地进程的变体
+    let kind = build_kind(DialogKind::Local, "bash");
+    match kind {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "bash"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn local_with_command_trims_whitespace() {
+    let kind = build_kind(DialogKind::Local, "  bash  ");
+    match kind {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "bash"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn ssh_with_empty_command_defaults_to_ssh() {
+    let kind = build_kind(DialogKind::Ssh, "");
+    match kind {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "ssh"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn ssh_with_whitespace_command_defaults_to_ssh() {
+    let kind = build_kind(DialogKind::Ssh, "   ");
+    match kind {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "ssh"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn ssh_with_command_keeps_value_trimmed() {
+    let kind = build_kind(DialogKind::Ssh, "  ssh user@host  ");
+    match kind {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "ssh user@host"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn dialog_kind_default_command() {
+    assert_eq!(DialogKind::Local.default_command(), "");
+    assert_eq!(DialogKind::Ssh.default_command(), "ssh");
+  }
+
+  #[test]
+  fn dialog_kind_label_and_icon() {
+    assert_eq!(DialogKind::Local.label(), "Local");
+    assert_eq!(DialogKind::Ssh.label(), "SSH");
+    assert!(matches!(DialogKind::Local.icon(), IconName::SquareTerminal));
+    assert!(matches!(DialogKind::Ssh.icon(), IconName::Globe));
+  }
+}

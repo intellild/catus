@@ -579,7 +579,381 @@ impl Terminal {
 }
 
 fn is_word_boundary(c: char) -> bool {
-  c.is_whitespace() || c.is_ascii_punctuation()
+  c.is_whitespace()
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}
+
+#[cfg(test)]
+mod tests {
+  use super::{Pty, Terminal, is_word_boundary};
+  use crate::terminal::content::{IndexedCell, TerminalPoint};
+  use crate::terminal::fake_pty::FakePty;
+  use alacritty_terminal::term::TermMode;
+  use gpui::{AppContext as _, Bounds, Entity, TestAppContext, point, px, size};
+  use std::sync::Arc;
+
+  /// 用 FakePty 创建一个 Terminal 实体。
+  fn make_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
+    let pty = Arc::new(FakePty::new()) as Arc<dyn Pty>;
+    cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"))
+  }
+
+  /// 构造一个指定字符的单元格。
+  fn cell_with(c: char) -> alacritty_terminal::term::cell::Cell {
+    let mut cell = alacritty_terminal::term::cell::Cell::default();
+    cell.c = c;
+    cell
+  }
+
+  /// 构造位于 (line, col) 的单元格。
+  fn indexed(line: i32, col: usize, c: char) -> IndexedCell {
+    IndexedCell {
+      point: TerminalPoint {
+        line: alacritty_terminal::index::Line(line),
+        column: alacritty_terminal::index::Column(col),
+      },
+      cell: cell_with(c),
+    }
+  }
+
+  #[gpui::test]
+  fn is_word_boundary_classifies_chars() {
+    // 简单版本：仅以空格类字符作为单词边界，标点不分割单词
+    assert!(is_word_boundary(' '));
+    assert!(is_word_boundary('\t'));
+    assert!(is_word_boundary('\n'));
+    assert!(!is_word_boundary('.'));
+    assert!(!is_word_boundary(','));
+    assert!(!is_word_boundary('/'));
+    assert!(!is_word_boundary('_'));
+    assert!(!is_word_boundary('a'));
+    assert!(!is_word_boundary('Z'));
+    assert!(!is_word_boundary('0'));
+  }
+
+  #[gpui::test]
+  fn point_from_pixel_maps_to_grid(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, _cx| {
+      // bounds 从 (10,20) 开始，char 宽 8、高 16
+      let bounds = Bounds {
+        origin: point(px(10.), px(20.)),
+        size: size(px(800.), px(384.)),
+      };
+      let p = t.point_from_pixel(
+        point(px(10. + 3. * 8.), px(20. + 5. * 16.)),
+        bounds,
+        px(8.),
+        px(16.),
+      );
+      assert_eq!(p.line.0, 5);
+      assert_eq!(p.column.0, 3);
+    });
+  }
+
+  #[gpui::test]
+  fn point_from_pixel_clamps_negative(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, _cx| {
+      let bounds = Bounds {
+        origin: point(px(10.), px(20.)),
+        size: size(px(800.), px(384.)),
+      };
+      let p = t.point_from_pixel(point(px(0.), px(0.)), bounds, px(8.), px(16.));
+      assert_eq!(p.line.0, 0);
+      assert_eq!(p.column.0, 0);
+    });
+  }
+
+  #[gpui::test]
+  fn echo_input_appears_in_content(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    // 输入 "hi"，FakePty 会原样回显
+    terminal.update(cx, |t, cx| t.input(cx, b"hi".to_vec()));
+    cx.run_until_parked();
+    // 提取渲染内容
+    terminal.update(cx, |t, cx| t.refresh_content(cx));
+
+    let cells = terminal.read_with(cx, |t, _| t.content().cells.clone());
+    let row0: String = cells
+      .iter()
+      .filter(|c| c.point.line.0 == 0)
+      .map(|c| c.cell.c)
+      .collect();
+    assert!(
+      row0.starts_with("hi"),
+      "row should start with 'hi', got: {:?}",
+      row0
+    );
+  }
+
+  #[gpui::test]
+  fn title_updates_from_osc_sequence(cx: &mut TestAppContext) {
+    // 保留底层 FakePty 引用，以便在 Terminal 构造后向其 reader 注入输出。
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    // 注入 OSC 标题序列: ESC ] 2 ; My Title BEL
+    fake.push_bytes("\x1b]2;My Title\x07").unwrap();
+    cx.run_until_parked();
+
+    let title = terminal.read_with(cx, |t, _| t.title().to_string());
+    assert_eq!(title, "My Title");
+  }
+
+  #[gpui::test]
+  fn empty_title_osc_does_not_overwrite(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    // 先设置一个标题
+    fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+      terminal.read_with(cx, |t, _| t.title().to_string()),
+      "Real Title"
+    );
+
+    // 再注入空标题，不应覆盖
+    fake.push_bytes("\x1b]2;   \x07").unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+      terminal.read_with(cx, |t, _| t.title().to_string()),
+      "Real Title"
+    );
+  }
+
+  #[gpui::test]
+  fn selected_text_extracts_selection(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, cx| {
+      // 手动填充 content.cells
+      t.content.cells = vec![
+        indexed(0, 0, 'h'),
+        indexed(0, 1, 'e'),
+        indexed(0, 2, 'l'),
+        indexed(0, 3, 'l'),
+        indexed(0, 4, 'o'),
+        indexed(1, 0, 'w'),
+        indexed(1, 1, 'o'),
+        indexed(1, 2, 'r'),
+        indexed(1, 3, 'l'),
+        indexed(1, 4, 'd'),
+      ];
+      t.set_selection_start(
+        TerminalPoint {
+          line: alacritty_terminal::index::Line(0),
+          column: alacritty_terminal::index::Column(1),
+        },
+        cx,
+      );
+      t.set_selection_end(
+        TerminalPoint {
+          line: alacritty_terminal::index::Line(1),
+          column: alacritty_terminal::index::Column(2),
+        },
+        cx,
+      );
+    });
+
+    let text = terminal.read_with(cx, |t, _| t.selected_text());
+    assert_eq!(text, "ello\nwor");
+  }
+
+  #[gpui::test]
+  fn selected_text_empty_without_selection(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    let text = terminal.read_with(cx, |t, _| t.selected_text());
+    assert_eq!(text, "");
+  }
+
+  #[gpui::test]
+  fn clear_selection_resets(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, cx| {
+      t.set_selection_start(TerminalPoint::default(), cx);
+      assert!(t.selection().is_some());
+      t.clear_selection(cx);
+      assert!(t.selection().is_none());
+    });
+  }
+
+  #[gpui::test]
+  fn select_word_at_selects_contiguous_word(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, cx| {
+      // 行：foo bar baz（以空格分隔）
+      t.content.cells = vec![
+        indexed(0, 0, 'f'),
+        indexed(0, 1, 'o'),
+        indexed(0, 2, 'o'),
+        indexed(0, 3, ' '),
+        indexed(0, 4, 'b'),
+        indexed(0, 5, 'a'),
+        indexed(0, 6, 'r'),
+        indexed(0, 7, ' '),
+        indexed(0, 8, 'b'),
+        indexed(0, 9, 'a'),
+        indexed(0, 10, 'z'),
+      ];
+      // 点击 'b' (col 4)，应当选中 "bar"
+      t.select_word_at(
+        TerminalPoint {
+          line: alacritty_terminal::index::Line(0),
+          column: alacritty_terminal::index::Column(4),
+        },
+        cx,
+      );
+      let sel = t.selection().expect("selection set");
+      assert_eq!(sel.start.column.0, 4);
+      assert_eq!(sel.end.column.0, 6);
+      assert_eq!(t.selected_text(), "bar");
+    });
+  }
+
+  #[gpui::test]
+  fn select_word_at_on_boundary_selects_single_cell(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, cx| {
+      t.content.cells = vec![
+        indexed(0, 0, 'a'),
+        indexed(0, 1, 'b'),
+        indexed(0, 2, ' '),
+        indexed(0, 3, 'c'),
+      ];
+      // 点击空格（单词边界）
+      t.select_word_at(
+        TerminalPoint {
+          line: alacritty_terminal::index::Line(0),
+          column: alacritty_terminal::index::Column(2),
+        },
+        cx,
+      );
+      let sel = t.selection().expect("selection set");
+      assert_eq!(sel.start, sel.end);
+      assert_eq!(sel.start.column.0, 2);
+    });
+  }
+
+  #[gpui::test]
+  fn paste_wraps_with_brackets_when_mode_enabled(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    // 开启 bracketed paste 模式
+    fake.push_bytes("\x1b[?2004h").unwrap();
+    cx.run_until_parked();
+    terminal.update(cx, |t, cx| t.refresh_content(cx));
+    let bracketed = terminal.read_with(cx, |t, _| {
+      t.content().mode.contains(TermMode::BRACKETED_PASTE)
+    });
+    assert!(bracketed, "bracketed paste mode should be enabled");
+
+    // 粘贴文本，应当被 bracket 包裹
+    terminal.update(cx, |t, cx| t.paste(cx, "hello".to_string()));
+    cx.run_until_parked();
+
+    let written = fake.writes_string();
+    assert!(
+      written.contains("\x1b[200~hello\x1b[201~"),
+      "expected bracketed paste, got: {:?}",
+      written
+    );
+  }
+
+  #[gpui::test]
+  fn paste_without_brackets_when_mode_disabled(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    // 默认未开启 bracketed paste
+    terminal.update(cx, |t, cx| t.paste(cx, "hello\r\nworld".to_string()));
+    cx.run_until_parked();
+
+    let written = fake.writes_string();
+    assert!(!written.contains("\x1b[200~"));
+    assert!(written.contains("hello\nworld"));
+  }
+
+  #[gpui::test]
+  fn sync_size_resizes_alacritty_and_pty(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    terminal.update(cx, |t, cx| {
+      t.sync_size(
+        Bounds {
+          origin: point(px(0.), px(0.)),
+          size: size(px(800.), px(384.)),
+        },
+        px(8.),
+        px(16.),
+        cx,
+      );
+    });
+    cx.run_until_parked();
+
+    // 800/8 = 100 列，384/16 = 24 行
+    let resizes = fake.resizes();
+    assert_eq!(resizes.len(), 1);
+    assert_eq!(resizes[0].cols, 100);
+    assert_eq!(resizes[0].rows, 24);
+  }
+
+  #[gpui::test]
+  fn sync_size_skips_when_unchanged(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::with_echo_mode(
+      crate::terminal::fake_pty::EchoMode::None,
+    ));
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    let bounds = Bounds {
+      origin: point(px(0.), px(0.)),
+      size: size(px(800.), px(384.)),
+    };
+    terminal.update(cx, |t, cx| t.sync_size(bounds, px(8.), px(16.), cx));
+    cx.run_until_parked();
+    assert_eq!(fake.resizes().len(), 1);
+
+    // 同样尺寸再次调用不应触发 resize
+    terminal.update(cx, |t, cx| t.sync_size(bounds, px(8.), px(16.), cx));
+    cx.run_until_parked();
+    assert_eq!(fake.resizes().len(), 1);
+  }
+
+  #[gpui::test]
+  fn scroll_sets_user_scrolled_flag(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    terminal.update(cx, |t, cx| {
+      assert!(!t.user_has_scrolled());
+      t.scroll_lines(3, true, cx);
+      assert!(t.user_has_scrolled());
+    });
+  }
+
+  #[gpui::test]
+  fn terminal_starts_not_closed(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    let closed = terminal.read_with(cx, |t, _| t.is_closed());
+    assert!(!closed);
+    let title = terminal.read_with(cx, |t, _| t.title().to_string());
+    assert_eq!(title, "Terminal");
+  }
+}

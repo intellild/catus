@@ -184,3 +184,66 @@ fn run_writer(
     }
   });
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 将 CommandBuilder 的 argv 转为字符串列表，便于断言。
+  fn argv_strings(cmd: &CommandBuilder) -> Vec<String> {
+    cmd
+      .get_argv()
+      .iter()
+      .map(|s| s.to_string_lossy().into_owned())
+      .collect()
+  }
+
+  #[test]
+  fn build_command_none_uses_default_shell() {
+    let cmd = build_command(None);
+    // 非默认程序：argv 第一个元素为 shell 路径
+    let argv = argv_strings(&cmd);
+    assert!(!argv.is_empty(), "default shell should have a program");
+    // 与 SHELL 环境变量或 /bin/sh 一致
+    let expected = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    assert_eq!(argv[0], expected);
+    assert_eq!(argv.len(), 1, "default shell has no extra args");
+  }
+
+  #[test]
+  fn build_command_empty_string_falls_back_to_default_shell() {
+    let cmd = build_command(Some(""));
+    let cmd2 = build_command(Some("   "));
+    assert!(!argv_strings(&cmd).is_empty());
+    assert!(!argv_strings(&cmd2).is_empty());
+  }
+
+  #[test]
+  fn build_command_single_program_no_args() {
+    let cmd = build_command(Some("ssh"));
+    let argv = argv_strings(&cmd);
+    assert_eq!(argv, vec!["ssh".to_string()]);
+  }
+
+  #[test]
+  fn build_command_splits_on_whitespace() {
+    let cmd = build_command(Some("ssh user@host -p 2222"));
+    let argv = argv_strings(&cmd);
+    assert_eq!(
+      argv,
+      vec![
+        "ssh".to_string(),
+        "user@host".to_string(),
+        "-p".to_string(),
+        "2222".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn build_command_trims_surrounding_whitespace() {
+    let cmd = build_command(Some("  ssh user@host  "));
+    let argv = argv_strings(&cmd);
+    assert_eq!(argv, vec!["ssh".to_string(), "user@host".to_string()]);
+  }
+}

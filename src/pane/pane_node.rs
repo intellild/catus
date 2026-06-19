@@ -200,3 +200,206 @@ impl PaneNode {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::terminal::FakePty;
+  use gpui::TestAppContext;
+  use std::sync::Arc;
+
+  /// 用 FakePty 创建一个 TerminalView 实体，用于测试 PaneNode 树操作。
+  fn make_view(cx: &mut TestAppContext) -> PaneView {
+    use gpui::AppContext as _;
+    let pty = Arc::new(FakePty::new()) as Arc<dyn crate::terminal::Pty>;
+    let terminal = cx.new(|cx| crate::terminal::Terminal::new(pty, cx).expect("create terminal"));
+    let view = cx.new(|cx| crate::terminal::TerminalView::new(terminal, cx));
+    PaneView::Terminal(view)
+  }
+
+  fn leaf(id: u64, view: PaneView) -> PaneNode {
+    PaneNode::new_leaf(PaneLeafId(id), view)
+  }
+
+  #[gpui::test]
+  fn leaf_count_single_and_split(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+
+    let single = leaf(1, v1);
+    assert_eq!(single.leaf_count(), 1);
+
+    let split = PaneNode::Split {
+      direction: SplitDirection::Horizontal,
+      children: vec![leaf(1, v2), leaf(2, v3)],
+    };
+    assert_eq!(split.leaf_count(), 2);
+  }
+
+  #[gpui::test]
+  fn contains_finds_nested_leaves(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+
+    let mut root = leaf(1, v1);
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2));
+    root.split_at(PaneLeafId(2), SplitDirection::Vertical, leaf(3, v3));
+
+    assert!(root.contains(PaneLeafId(1)));
+    assert!(root.contains(PaneLeafId(2)));
+    assert!(root.contains(PaneLeafId(3)));
+    assert!(!root.contains(PaneLeafId(99)));
+  }
+
+  #[gpui::test]
+  fn split_at_same_direction_flattens(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+
+    let mut root = leaf(1, v1);
+    // 同方向 split 应当插入到同一层
+    assert!(root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2)));
+    assert!(root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(3, v3)));
+
+    if let PaneNode::Split {
+      direction,
+      children,
+    } = &root
+    {
+      assert_eq!(*direction, SplitDirection::Horizontal);
+      assert_eq!(children.len(), 3);
+    } else {
+      panic!("root should be a split with 3 children");
+    }
+    assert_eq!(root.leaf_count(), 3);
+  }
+
+  #[gpui::test]
+  fn split_at_different_direction_nests(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+
+    let mut root = leaf(1, v1);
+    assert!(root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2)));
+    // 不同方向应当在目标叶子内嵌套
+    assert!(root.split_at(PaneLeafId(1), SplitDirection::Vertical, leaf(3, v3)));
+
+    if let PaneNode::Split { children, .. } = &root {
+      assert_eq!(children.len(), 2);
+      // 第一个孩子应是嵌套的 split
+      assert!(matches!(children[0], PaneNode::Split { .. }));
+    } else {
+      panic!("root should be a split");
+    }
+    assert_eq!(root.leaf_count(), 3);
+  }
+
+  #[gpui::test]
+  fn split_at_unknown_target_returns_false(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let mut root = leaf(1, v1);
+    assert!(!root.split_at(PaneLeafId(99), SplitDirection::Horizontal, leaf(2, v2)));
+    assert!(root.is_leaf());
+  }
+
+  #[gpui::test]
+  fn remove_leaf_collapses_single_child_split(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let mut root = leaf(1, v1);
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2));
+
+    // 删除叶子 2 后只剩叶子 1，应折叠回单个叶子
+    assert!(root.remove_leaf(PaneLeafId(2)));
+    assert!(root.is_leaf());
+    assert!(root.contains(PaneLeafId(1)));
+  }
+
+  #[gpui::test]
+  fn remove_leaf_keeps_split_when_multiple_remain(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+    let mut root = leaf(1, v1);
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2));
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(3, v3));
+
+    assert!(root.remove_leaf(PaneLeafId(2)));
+    assert_eq!(root.leaf_count(), 2);
+    assert!(root.contains(PaneLeafId(1)));
+    assert!(root.contains(PaneLeafId(3)));
+  }
+
+  #[gpui::test]
+  fn remove_unknown_leaf_returns_false(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let mut root = leaf(1, v1);
+    assert!(!root.remove_leaf(PaneLeafId(99)));
+  }
+
+  #[gpui::test]
+  fn first_and_find_view_by_id(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let mut root = leaf(1, v1.clone());
+    root.split_at(
+      PaneLeafId(1),
+      SplitDirection::Horizontal,
+      leaf(2, v2.clone()),
+    );
+
+    let first = root.first_leaf_view().expect("first leaf");
+    assert_eq!(first, &v1);
+
+    assert_eq!(root.find_view_by_id(PaneLeafId(2)), Some(&v2));
+    assert_eq!(root.find_view_by_id(PaneLeafId(99)), None);
+  }
+
+  #[gpui::test]
+  fn find_leaf_id_by_view(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let mut root = leaf(1, v1.clone());
+    root.split_at(
+      PaneLeafId(1),
+      SplitDirection::Horizontal,
+      leaf(2, v2.clone()),
+    );
+
+    assert_eq!(root.find_leaf_id_by_view(&v1), Some(PaneLeafId(1)));
+    assert_eq!(root.find_leaf_id_by_view(&v2), Some(PaneLeafId(2)));
+  }
+
+  #[gpui::test]
+  fn next_leaf_after_traversal(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+    let mut root = leaf(1, v1);
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2));
+    root.split_at(PaneLeafId(2), SplitDirection::Horizontal, leaf(3, v3));
+
+    assert_eq!(root.next_leaf_after(PaneLeafId(1)), Some(PaneLeafId(2)));
+    assert_eq!(root.next_leaf_after(PaneLeafId(2)), Some(PaneLeafId(3)));
+    assert_eq!(root.next_leaf_after(PaneLeafId(3)), None);
+  }
+
+  #[gpui::test]
+  fn prev_leaf_before_traversal(cx: &mut TestAppContext) {
+    let v1 = make_view(cx);
+    let v2 = make_view(cx);
+    let v3 = make_view(cx);
+    let mut root = leaf(1, v1);
+    root.split_at(PaneLeafId(1), SplitDirection::Horizontal, leaf(2, v2));
+    root.split_at(PaneLeafId(2), SplitDirection::Horizontal, leaf(3, v3));
+
+    assert_eq!(root.prev_leaf_before(PaneLeafId(1)), None);
+    assert_eq!(root.prev_leaf_before(PaneLeafId(2)), Some(PaneLeafId(1)));
+    assert_eq!(root.prev_leaf_before(PaneLeafId(3)), Some(PaneLeafId(2)));
+  }
+}

@@ -17,3 +17,8 @@ portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1.89"
 tracing = "0.1"
+
+[features]
+# 启用 gpui 的测试支持（TestAppContext / #[gpui::test] 等）。
+# 运行测试时使用 `cargo test --features test-support`。
+test-support = ["gpui/test-support"]

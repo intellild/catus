@@ -34,6 +34,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - `src/terminal/view.rs`: 终端 GPUI view、键盘输入、滚轮、复制粘贴。
 - `src/terminal/terminal_element.rs`: 低层 GPUI `Element`，负责 prepaint 同步和 paint 渲染。
 - `src/terminal/content.rs`: 终端渲染用的 plain state 和颜色转换。
+- `src/terminal/fake_pty.rs`: 仅测试构建可用的 `FakePty`，实现 `Pty` trait 并原样回显写入数据，可向 reader 注入输出用于模拟程序输出/OSC 序列。
 
 ## 终端架构约定
 
@@ -70,4 +71,6 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 - 代码变更后运行 `cargo fmt`。
 - Rust 行为变更后至少运行 `cargo check`；涉及终端输入、PTY、pane 或 tab 的变更应补充更具体的验证。
+- 运行测试用 `cargo test --features test-support`。该 feature 启用 gpui 的 `test-support`，提供 `TestAppContext` / `#[gpui::test]`。纯逻辑测试用内置 `#[test]`，需要异步或 GPUI 实体的测试用 `#[gpui::test]`。
+- 测试中需要终端时优先用 `FakePty`（`crate::terminal::FakePty`）而非 `LocalPty`，避免启动真实 shell。`Workspace` 与 `App` 各有 `#[cfg(test)]` 构造函数（`new_with_fake_pty` / `with_workspaces`）复用 `FakePty`。
 - 保持文档和源码一致。不要在 `AGENTS.md` 中保留字段级代码块、长流程图或尚未实现的能力说明，除非它们会被持续维护。

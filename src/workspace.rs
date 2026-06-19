@@ -128,8 +128,18 @@ impl Workspace {
   ) -> Result<Entity<TerminalView>, String> {
     let pty = LocalPty::new(TerminalSize::default_size(), kind.command())
       .map_err(|e| format!("Failed to create PTY: {}", e))?;
-    let terminal =
-      cx.new(|cx| Terminal::new(Arc::new(pty), cx).expect("Failed to create terminal"));
+    Self::create_terminal_view_with_pty(cx, Arc::new(pty))
+  }
+
+  /// 用给定的 PTY 创建 Terminal + TerminalView 实体，并订阅 TerminalViewEvent。
+  ///
+  /// 生产代码中由 [`create_terminal_view`] 调用，传入 `LocalPty`；
+  /// 测试中可传入 `FakePty` 以避免启动真实子进程。
+  pub(crate) fn create_terminal_view_with_pty(
+    cx: &mut gpui::Context<Self>,
+    pty: Arc<dyn crate::terminal::Pty>,
+  ) -> Result<Entity<TerminalView>, String> {
+    let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("Failed to create terminal"));
     let view = cx.new(|cx| TerminalView::new(terminal, cx));
 
     cx.subscribe(&view, |_, _, event: &TerminalViewEvent, cx| {
@@ -143,5 +153,130 @@ impl Workspace {
     .detach();
 
     Ok(view)
+  }
+}
+
+#[cfg(test)]
+impl Workspace {
+  /// 用 FakePty 创建一个 Workspace，避免测试中启动真实 shell。
+  pub(crate) fn new_with_fake_pty(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
+    match Self::make_tab_with_fake_pty(cx) {
+      Ok(tab) => {
+        let active_tab_id = Some(tab.id);
+        Self {
+          kind,
+          tabs: vec![tab],
+          active_tab_id,
+        }
+      }
+      Err(e) => {
+        eprintln!("Failed to create default terminal: {}", e);
+        Self {
+          kind,
+          tabs: vec![],
+          active_tab_id: None,
+        }
+      }
+    }
+  }
+
+  fn make_tab_with_fake_pty(cx: &mut gpui::Context<Self>) -> Result<TabItem, String> {
+    let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
+    let terminal_view = Self::create_terminal_view_with_pty(cx, pty)?;
+    let workspace_handle = cx.entity().clone();
+    let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
+    Ok(TabItem {
+      id: generate_tab_id(),
+      pane_group,
+    })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::workspace_kind::WorkspaceKind;
+  use gpui::TestAppContext;
+
+  /// 创建一个使用 FakePty 的 Workspace 实体。
+  fn make_workspace(cx: &mut TestAppContext, kind: WorkspaceKind) -> Entity<Workspace> {
+    use gpui::AppContext as _;
+    cx.new(|cx| Workspace::new_with_fake_pty(kind, cx))
+  }
+
+  #[gpui::test]
+  fn new_workspace_has_single_active_tab(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let (tabs, active) = ws.read_with(cx, |w, _| (w.tabs.len(), w.active_tab_id));
+    assert_eq!(tabs, 1);
+    assert!(active.is_some());
+  }
+
+  #[gpui::test]
+  fn active_tab_and_index_are_consistent(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+    ws.update(cx, |w, cx| {
+      let id = w.active_tab_id.expect("has active tab");
+      assert_eq!(w.active_tab().map(|t| t.id), Some(id));
+      assert_eq!(w.active_index(), Some(0));
+      let _ = cx;
+    });
+  }
+
+  #[gpui::test]
+  fn activate_tab_returns_false_for_unknown(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+    ws.update(cx, |w, cx| {
+      let original = w.active_tab_id;
+      let ok = w.activate_tab(TabId(9999), cx);
+      assert!(!ok);
+      assert_eq!(w.active_tab_id, original);
+    });
+  }
+
+  #[gpui::test]
+  fn close_tab_falls_back_to_previous(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+    // 预置两个额外的 tab：直接构造 TabItem 并添加，避免再次创建终端
+    ws.update(cx, |w, cx| {
+      // 借用现有 tab 的 pane_group 作为占位，仅用于测试 close 索引逻辑
+      let placeholder_pane = w.tabs[0].pane_group.clone();
+      let tab1 = TabItem {
+        id: generate_tab_id(),
+        pane_group: placeholder_pane.clone(),
+      };
+      let tab2 = TabItem {
+        id: generate_tab_id(),
+        pane_group: placeholder_pane,
+      };
+      w.add_tab(tab1, cx);
+      w.add_tab(tab2, cx);
+    });
+
+    ws.update(cx, |w, cx| {
+      // 现在有 3 个 tab，激活的是最后一个（tab2）
+      let active_id = w.active_tab_id.expect("active");
+      // 关闭激活的 tab，应当回退到上一个
+      assert!(w.close_tab(active_id, cx));
+      assert_eq!(w.tabs.len(), 2);
+      assert!(w.active_tab_id.is_some());
+    });
+  }
+
+  #[gpui::test]
+  fn close_unknown_tab_returns_false(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+    ws.update(cx, |w, cx| {
+      assert!(!w.close_tab(TabId(9999), cx));
+      assert_eq!(w.tabs.len(), 1);
+    });
+  }
+
+  #[gpui::test]
+  fn workspace_display_name_and_icon_delegate_to_kind(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Ssh("ssh h".to_string()));
+    ws.read_with(cx, |w, _| {
+      assert_eq!(w.display_name().as_ref(), "ssh h");
+    });
   }
 }

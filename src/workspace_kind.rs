@@ -46,3 +46,56 @@ impl WorkspaceKind {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn local_command_is_none() {
+    assert_eq!(WorkspaceKind::Local.command(), None);
+  }
+
+  #[test]
+  fn ssh_command_returns_provided_string() {
+    let kind = WorkspaceKind::Ssh("ssh user@host".to_string());
+    assert_eq!(kind.command(), Some("ssh user@host"));
+  }
+
+  #[test]
+  fn local_icon_is_square_terminal() {
+    assert!(matches!(
+      WorkspaceKind::Local.icon(),
+      IconName::SquareTerminal
+    ));
+  }
+
+  #[test]
+  fn ssh_icon_is_globe() {
+    let kind = WorkspaceKind::Ssh("ssh user@host".to_string());
+    assert!(matches!(kind.icon(), IconName::Globe));
+  }
+
+  #[test]
+  fn local_display_name_is_local() {
+    assert_eq!(WorkspaceKind::Local.display_name().as_ref(), "Local");
+  }
+
+  #[test]
+  fn ssh_display_name_shows_command() {
+    let kind = WorkspaceKind::Ssh("ssh user@host".to_string());
+    assert_eq!(kind.display_name().as_ref(), "ssh user@host");
+  }
+
+  #[test]
+  fn ssh_display_name_trims_surrounding_whitespace() {
+    let kind = WorkspaceKind::Ssh("  ssh user@host  ".to_string());
+    assert_eq!(kind.display_name().as_ref(), "ssh user@host");
+  }
+
+  #[test]
+  fn ssh_display_name_falls_back_to_ssh_when_empty() {
+    let kind = WorkspaceKind::Ssh("   ".to_string());
+    assert_eq!(kind.display_name().as_ref(), "SSH");
+  }
+}

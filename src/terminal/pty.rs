@@ -70,3 +70,34 @@ pub trait Pty: Send + Sync {
   /// 返回一个异步通道接收器，用于接收 PTY 输出的数据
   fn reader(&self) -> Receiver<Vec<u8>>;
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn new_stores_all_dimensions() {
+    let size = TerminalSize::new(24, 80, 640, 384);
+    assert_eq!(size.rows, 24);
+    assert_eq!(size.cols, 80);
+    assert_eq!(size.pixel_width, 640);
+    assert_eq!(size.pixel_height, 384);
+  }
+
+  #[test]
+  fn default_size_is_24x80_without_pixels() {
+    let size = TerminalSize::default_size();
+    assert_eq!(size.rows, 24);
+    assert_eq!(size.cols, 80);
+    assert_eq!(size.pixel_width, 0);
+    assert_eq!(size.pixel_height, 0);
+  }
+
+  #[test]
+  fn size_equality_and_copy() {
+    let a = TerminalSize::new(10, 20, 0, 0);
+    let b = a;
+    assert_eq!(a, b);
+    assert_ne!(a, TerminalSize::new(10, 21, 0, 0));
+  }
+}

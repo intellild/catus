@@ -86,3 +86,153 @@ impl App {
     true
   }
 }
+
+#[cfg(test)]
+impl App {
+  /// 用预置的 Workspace 列表构造 App，避免测试中启动真实 shell。
+  /// active_index 默认指向最后一个 workspace。
+  pub(crate) fn with_workspaces(
+    workspaces: Vec<Entity<Workspace>>,
+    cx: &mut gpui::Context<Self>,
+  ) -> Self {
+    for ws in &workspaces {
+      Self::observe_workspace(ws, cx);
+    }
+    let active_index = if workspaces.is_empty() {
+      None
+    } else {
+      Some(workspaces.len() - 1)
+    };
+    Self {
+      workspaces,
+      active_index,
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::workspace::Workspace;
+  use crate::workspace_kind::WorkspaceKind;
+  use gpui::TestAppContext;
+
+  /// 创建一个使用 FakePty 的 App（单个本地 workspace）。
+  fn make_app(cx: &mut TestAppContext) -> Entity<App> {
+    let ws = cx.new(|cx| Workspace::new_with_fake_pty(WorkspaceKind::Local, cx));
+    cx.new(|cx| App::with_workspaces(vec![ws], cx))
+  }
+
+  /// 用 N 个 workspace 构造 App。
+  fn make_app_with_n(cx: &mut TestAppContext, n: usize) -> Entity<App> {
+    let mut workspaces = Vec::new();
+    for i in 0..n {
+      let kind = if i == 0 {
+        WorkspaceKind::Local
+      } else {
+        WorkspaceKind::Ssh(format!("ssh host{}", i))
+      };
+      workspaces.push(cx.new(|cx| Workspace::new_with_fake_pty(kind, cx)));
+    }
+    cx.new(|cx| App::with_workspaces(workspaces, cx))
+  }
+
+  #[gpui::test]
+  fn active_workspace_returns_some(cx: &mut TestAppContext) {
+    let app = make_app(cx);
+    app.read_with(cx, |a, _| {
+      assert!(a.active_workspace().is_some());
+      assert_eq!(a.active_index, Some(0));
+    });
+  }
+
+  #[gpui::test]
+  fn activate_workspace_within_bounds(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 3);
+    app.update(cx, |a, cx| {
+      assert!(a.activate_workspace(0, cx));
+      assert_eq!(a.active_index, Some(0));
+      assert!(a.activate_workspace(2, cx));
+      assert_eq!(a.active_index, Some(2));
+    });
+  }
+
+  #[gpui::test]
+  fn activate_workspace_out_of_bounds_returns_false(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 2);
+    app.update(cx, |a, cx| {
+      let original = a.active_index;
+      assert!(!a.activate_workspace(5, cx));
+      assert_eq!(a.active_index, original);
+    });
+  }
+
+  #[gpui::test]
+  fn close_workspace_refuses_when_only_one(cx: &mut TestAppContext) {
+    let app = make_app(cx);
+    app.update(cx, |a, cx| {
+      assert!(!a.close_workspace(0, cx));
+      assert_eq!(a.workspaces.len(), 1);
+    });
+  }
+
+  #[gpui::test]
+  fn close_workspace_out_of_bounds_returns_false(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 2);
+    app.update(cx, |a, cx| {
+      assert!(!a.close_workspace(9, cx));
+      assert_eq!(a.workspaces.len(), 2);
+    });
+  }
+
+  #[gpui::test]
+  fn close_active_workspace_falls_back(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 3);
+    // with_workspaces 默认激活最后一个（index 2）
+    app.update(cx, |a, cx| {
+      assert_eq!(a.active_index, Some(2));
+      assert!(a.close_workspace(2, cx));
+      // 关闭激活的，回退到 min(2, len-1=1) = 1
+      assert_eq!(a.workspaces.len(), 2);
+      assert_eq!(a.active_index, Some(1));
+    });
+  }
+
+  #[gpui::test]
+  fn close_workspace_before_active_shifts_index(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 3);
+    app.update(cx, |a, cx| {
+      a.activate_workspace(2, cx);
+      // 关闭 index 0（在激活之前），激活应变为 1
+      assert!(a.close_workspace(0, cx));
+      assert_eq!(a.workspaces.len(), 2);
+      assert_eq!(a.active_index, Some(1));
+    });
+  }
+
+  #[gpui::test]
+  fn close_workspace_after_active_keeps_index(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 3);
+    app.update(cx, |a, cx| {
+      a.activate_workspace(0, cx);
+      // 关闭 index 2（在激活之后），激活保持 0
+      assert!(a.close_workspace(2, cx));
+      assert_eq!(a.workspaces.len(), 2);
+      assert_eq!(a.active_index, Some(0));
+    });
+  }
+
+  #[gpui::test]
+  fn close_workspace_until_one_remains(cx: &mut TestAppContext) {
+    let app = make_app_with_n(cx, 3);
+    app.update(cx, |a, cx| {
+      assert!(a.close_workspace(2, cx));
+      assert_eq!(a.workspaces.len(), 2);
+      // 只剩两个时，再关闭仍可（保留至少一个）
+      assert!(a.close_workspace(1, cx));
+      assert_eq!(a.workspaces.len(), 1);
+      // 此时不能再关闭
+      assert!(!a.close_workspace(0, cx));
+    });
+  }
+}

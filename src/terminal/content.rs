@@ -209,3 +209,180 @@ pub fn ansi_color_to_rgb(color: &AnsiColor) -> [u8; 3] {
 pub fn rgb_to_hsla(rgb: [u8; 3]) -> Hsla {
   gpui::rgb((rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32).into()
 }
+
+#[cfg(test)]
+mod tests {
+  use super::{
+    CursorState, SelectionRange, TerminalContent, TerminalPoint, ansi_color_to_rgb, rgb_to_hsla,
+  };
+  use alacritty_terminal::index::{Column, Line};
+  use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+
+  fn point(line: i32, col: usize) -> TerminalPoint {
+    TerminalPoint {
+      line: Line(line),
+      column: Column(col),
+    }
+  }
+
+  fn range(s_line: i32, s_col: usize, e_line: i32, e_col: usize) -> SelectionRange {
+    SelectionRange {
+      start: point(s_line, s_col),
+      end: point(e_line, e_col),
+    }
+  }
+
+  #[test]
+  fn normalized_keeps_order_when_already_sorted() {
+    let (start, end) = range(0, 0, 0, 5).normalized();
+    assert_eq!(start.column.0, 0);
+    assert_eq!(end.column.0, 5);
+  }
+
+  #[test]
+  fn normalized_swaps_when_end_before_start_on_same_line() {
+    let (start, end) = range(0, 5, 0, 0).normalized();
+    assert_eq!(start.column.0, 0);
+    assert_eq!(end.column.0, 5);
+  }
+
+  #[test]
+  fn normalized_swaps_when_end_on_earlier_line() {
+    let (start, end) = range(2, 0, 1, 5).normalized();
+    assert_eq!(start.line.0, 1);
+    assert_eq!(end.line.0, 2);
+  }
+
+  #[test]
+  fn normalized_handles_same_point() {
+    let (start, end) = range(3, 7, 3, 7).normalized();
+    assert_eq!(start, end);
+  }
+
+  #[test]
+  fn contains_true_for_point_inside_same_line_range() {
+    let r = range(0, 2, 0, 5);
+    assert!(r.contains(point(0, 2)));
+    assert!(r.contains(point(0, 3)));
+    assert!(r.contains(point(0, 5)));
+  }
+
+  #[test]
+  fn contains_false_for_point_outside_same_line_range() {
+    let r = range(0, 2, 0, 5);
+    assert!(!r.contains(point(0, 1)));
+    assert!(!r.contains(point(0, 6)));
+  }
+
+  #[test]
+  fn contains_works_for_multi_line_selection() {
+    let r = range(1, 2, 3, 4);
+    // 完全位于中间的行
+    assert!(r.contains(point(2, 0)));
+    assert!(r.contains(point(2, 100)));
+    // 起点行：仅 >= start.col
+    assert!(r.contains(point(1, 2)));
+    assert!(!r.contains(point(1, 1)));
+    // 终点行：仅 <= end.col
+    assert!(r.contains(point(3, 4)));
+    assert!(!r.contains(point(3, 5)));
+    // 范围外行
+    assert!(!r.contains(point(0, 9)));
+    assert!(!r.contains(point(4, 0)));
+  }
+
+  #[test]
+  fn contains_works_with_reversed_range() {
+    let r = range(3, 4, 1, 2); // end before start
+    // normalized 后应当与正向范围等价
+    assert!(r.contains(point(2, 0)));
+    assert!(r.contains(point(1, 2)));
+    assert!(!r.contains(point(1, 1)));
+    assert!(r.contains(point(3, 4)));
+  }
+
+  #[test]
+  fn terminal_content_default_is_empty_and_at_bottom() {
+    let content = TerminalContent::new();
+    assert!(content.cells.is_empty());
+    assert_eq!(content.cursor_char, ' ');
+    assert!(content.scrolled_to_bottom);
+    assert!(content.selection.is_none());
+  }
+
+  #[test]
+  fn cursor_state_default_is_block_at_origin() {
+    let cursor = CursorState::default();
+    assert_eq!(cursor.point.line.0, 0);
+    assert_eq!(cursor.point.column.0, 0);
+    // CursorShape::Block 是默认
+    assert_eq!(
+      cursor.shape,
+      alacritty_terminal::vte::ansi::CursorShape::Block
+    );
+  }
+
+  #[test]
+  fn ansi_color_to_rgb_named_black_and_white() {
+    assert_eq!(
+      ansi_color_to_rgb(&AnsiColor::Named(NamedColor::Black)),
+      [0, 0, 0]
+    );
+    assert_eq!(
+      ansi_color_to_rgb(&AnsiColor::Named(NamedColor::White)),
+      [229, 229, 229]
+    );
+    assert_eq!(
+      ansi_color_to_rgb(&AnsiColor::Named(NamedColor::BrightWhite)),
+      [255, 255, 255]
+    );
+  }
+
+  #[test]
+  fn ansi_color_to_rgb_spec_uses_rgb_fields() {
+    let rgb = alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 };
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Spec(rgb)), [1, 2, 3]);
+  }
+
+  #[test]
+  fn ansi_color_to_rgb_indexed_standard_and_bright() {
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(0)), [0, 0, 0]);
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(7)), [229, 229, 229]);
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(9)), [255, 85, 85]);
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(15)), [255, 255, 255]);
+  }
+
+  #[test]
+  fn ansi_color_to_rgb_indexed_color_cube_16_to_231() {
+    // 索引 16 = (0,0,0)
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(16)), [0, 0, 0]);
+    // 索引 17 = (0,0,95) -> r=0,g=0,b=95
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(17)), [0, 0, 95]);
+    // 索引 231 = (255,255,255)
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(231)), [255, 255, 255]);
+  }
+
+  #[test]
+  fn ansi_color_to_rgb_indexed_grayscale_232_to_255() {
+    // 索引 232 = gray 8
+    assert_eq!(ansi_color_to_rgb(&AnsiColor::Indexed(232)), [8, 8, 8]);
+    // 索引 255 = gray 238
+    let gray = 8 + (255 - 232) * 10;
+    assert_eq!(
+      ansi_color_to_rgb(&AnsiColor::Indexed(255)),
+      [gray, gray, gray]
+    );
+  }
+
+  #[test]
+  fn rgb_to_hsla_black_is_zero_luminance() {
+    let hsla = rgb_to_hsla([0, 0, 0]);
+    assert_eq!(hsla.l, 0.0);
+  }
+
+  #[test]
+  fn rgb_to_hsla_white_is_full_luminance() {
+    let hsla = rgb_to_hsla([255, 255, 255]);
+    assert!((hsla.l - 1.0).abs() < 1e-6);
+  }
+}
