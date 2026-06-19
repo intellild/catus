@@ -284,6 +284,208 @@ impl TerminalElement {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::{BatchedTextRun, TerminalElement};
+  use crate::terminal::content::{IndexedCell, TerminalContent, TerminalPoint};
+  use alacritty_terminal::index::{Column, Line};
+  use alacritty_terminal::term::cell::{Cell, Flags};
+  use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+
+  fn point(line: i32, col: usize) -> TerminalPoint {
+    TerminalPoint {
+      line: Line(line),
+      column: Column(col),
+    }
+  }
+
+  /// 构造单元格：默认前景/背景，无 flags。
+  fn cell(c: char) -> Cell {
+    let mut cell = Cell::default();
+    cell.c = c;
+    cell
+  }
+
+  fn cell_with_colors(c: char, fg: AnsiColor, bg: AnsiColor) -> Cell {
+    let mut cell = Cell::default();
+    cell.c = c;
+    cell.fg = fg;
+    cell.bg = bg;
+    cell
+  }
+
+  fn cell_with_flags(c: char, flags: Flags) -> Cell {
+    let mut cell = Cell::default();
+    cell.c = c;
+    cell.flags = flags;
+    cell
+  }
+
+  fn indexed(line: i32, col: usize, cell: Cell) -> IndexedCell {
+    IndexedCell {
+      point: point(line, col),
+      cell,
+    }
+  }
+
+  fn content(cells: Vec<IndexedCell>) -> TerminalContent {
+    let mut c = TerminalContent::new();
+    c.cells = cells;
+    c
+  }
+
+  #[test]
+  fn is_default_bg_recognizes_background() {
+    assert!(TerminalElement::is_default_bg(&AnsiColor::Named(
+      NamedColor::Background
+    )));
+    assert!(!TerminalElement::is_default_bg(&AnsiColor::Named(
+      NamedColor::Foreground
+    )));
+    assert!(!TerminalElement::is_default_bg(&AnsiColor::Spec(
+      alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 }
+    )));
+  }
+
+  #[test]
+  fn layout_grid_merges_contiguous_same_style() {
+    // 同行、同色、连续 3 个字符 → 一个 run
+    let c = content(vec![
+      indexed(0, 0, cell('a')),
+      indexed(0, 1, cell('b')),
+      indexed(0, 2, cell('c')),
+    ]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].text, "abc");
+    assert_eq!(runs[0].cell_count, 3);
+    assert_eq!(runs[0].start_row, 0);
+    assert_eq!(runs[0].start_col, 0);
+  }
+
+  #[test]
+  fn layout_grid_breaks_on_new_row() {
+    let c = content(vec![indexed(0, 0, cell('a')), indexed(1, 0, cell('b'))]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "a");
+    assert_eq!(runs[1].text, "b");
+    assert_eq!(runs[1].start_row, 1);
+  }
+
+  #[test]
+  fn layout_grid_breaks_on_color_change() {
+    let red = AnsiColor::Named(NamedColor::Red);
+    let green = AnsiColor::Named(NamedColor::Green);
+    let c = content(vec![
+      indexed(
+        0,
+        0,
+        cell_with_colors('a', red, AnsiColor::Named(NamedColor::Background)),
+      ),
+      indexed(
+        0,
+        1,
+        cell_with_colors('b', green, AnsiColor::Named(NamedColor::Background)),
+      ),
+    ]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "a");
+    assert_eq!(runs[1].text, "b");
+    // 颜色不同不应合并
+    assert_ne!(runs[0].fg, runs[1].fg);
+  }
+
+  #[test]
+  fn layout_grid_breaks_on_gap() {
+    // col 不连续（0 然后 2，跳过 1）
+    let c = content(vec![indexed(0, 0, cell('a')), indexed(0, 2, cell('b'))]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 2);
+  }
+
+  #[test]
+  fn layout_grid_space_with_default_bg_breaks_run() {
+    // 默认背景的空格会断开当前 run，但不产生新 run
+    let c = content(vec![
+      indexed(0, 0, cell('a')),
+      indexed(0, 1, cell(' ')),
+      indexed(0, 2, cell('b')),
+    ]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "a");
+    assert_eq!(runs[1].text, "b");
+  }
+
+  #[test]
+  fn layout_grid_inverse_swaps_fg_bg() {
+    let bg = AnsiColor::Named(NamedColor::Background);
+    let c = content(vec![indexed(0, 0, cell_with_flags('a', Flags::INVERSE))]);
+    // 默认 cell 的 fg=Foreground, bg=Background；inverse 后应交换
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 1);
+    // 交换后 fg 应为 Background 的 RGB，bg 应为 Foreground 的 RGB
+    let expected_fg = crate::terminal::content::ansi_color_to_rgb(&bg);
+    let expected_bg =
+      crate::terminal::content::ansi_color_to_rgb(&AnsiColor::Named(NamedColor::Foreground));
+    assert_eq!(runs[0].fg, expected_fg);
+    assert_eq!(runs[0].bg, expected_bg);
+  }
+
+  #[test]
+  fn layout_grid_dim_halves_fg() {
+    let c = content(vec![indexed(0, 0, cell_with_flags('a', Flags::DIM))]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 1);
+    let full_fg =
+      crate::terminal::content::ansi_color_to_rgb(&AnsiColor::Named(NamedColor::Foreground));
+    assert_eq!(runs[0].fg, [full_fg[0] / 2, full_fg[1] / 2, full_fg[2] / 2]);
+  }
+
+  #[test]
+  fn layout_grid_bold_sets_bold_flag() {
+    let c = content(vec![indexed(0, 0, cell_with_flags('a', Flags::BOLD))]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert_eq!(runs.len(), 1);
+    assert!(runs[0].bold);
+  }
+
+  #[test]
+  fn layout_grid_skips_wide_char_spacer() {
+    // WIDE_CHAR_SPACER 单元格应被跳过
+    let c = content(vec![
+      indexed(0, 0, cell('a')),
+      indexed(0, 1, cell_with_flags(' ', Flags::WIDE_CHAR_SPACER)),
+      indexed(0, 2, cell('b')),
+    ]);
+    let runs = TerminalElement::layout_grid(&c);
+    // 跳过 spacer 后，col 0 和 col 2 不连续 → 两个 run
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "a");
+    assert_eq!(runs[1].text, "b");
+  }
+
+  #[test]
+  fn layout_grid_empty_content_returns_no_runs() {
+    let c = content(vec![]);
+    let runs = TerminalElement::layout_grid(&c);
+    assert!(runs.is_empty());
+  }
+
+  #[test]
+  fn batched_text_run_can_append_logic() {
+    let mut run = BatchedTextRun::new(0, 0, [1, 2, 3], [4, 5, 6], false);
+    assert!(run.can_append([1, 2, 3], [4, 5, 6], false));
+    assert!(!run.can_append([9, 9, 9], [4, 5, 6], false));
+    assert!(!run.can_append([1, 2, 3], [4, 5, 6], true));
+    run.append_char('x');
+    assert_eq!(run.text, "x");
+    assert_eq!(run.cell_count, 1);
+  }
+}
+
 impl Element for TerminalElement {
   type RequestLayoutState = ();
   type PrepaintState = LayoutState;

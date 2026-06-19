@@ -34,7 +34,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - `src/terminal/view.rs`: 终端 GPUI view、键盘输入、滚轮、复制粘贴。
 - `src/terminal/terminal_element.rs`: 低层 GPUI `Element`，负责 prepaint 同步和 paint 渲染。
 - `src/terminal/content.rs`: 终端渲染用的 plain state 和颜色转换。
-- `src/terminal/fake_pty.rs`: 仅测试构建可用的 `FakePty`，实现 `Pty` trait 并原样回显写入数据，可向 reader 注入输出用于模拟程序输出/OSC 序列。
+- `src/terminal/fake_pty.rs`: 仅测试构建可用的 `FakePty`，实现 `Pty` trait 并原样回显写入数据，可向 reader 注入输出用于模拟程序输出/OSC 序列；`close_reader` 可模拟 PTY EOF。
 
 ## 终端架构约定
 

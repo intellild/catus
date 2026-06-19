@@ -51,7 +51,7 @@ impl From<TerminalSize> for RecordedResize {
 /// - `reader` 返回的通道接收回显数据以及 `push_output` 注入的数据。
 /// - 通过 `Arc<Mutex<...>>` 持有可变状态以满足 `&self` 的 trait 约定。
 pub struct FakePty {
-  reader_tx: Sender<Vec<u8>>,
+  reader_tx: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
   reader_rx: Receiver<Vec<u8>>,
   echo_mode: Arc<Mutex<EchoMode>>,
   writes: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -69,7 +69,7 @@ impl FakePty {
   pub fn with_echo_mode(mode: EchoMode) -> Self {
     let (reader_tx, reader_rx) = unbounded::<Vec<u8>>();
     Self {
-      reader_tx,
+      reader_tx: Arc::new(Mutex::new(Some(reader_tx))),
       reader_rx,
       echo_mode: Arc::new(Mutex::new(mode)),
       writes: Arc::new(Mutex::new(Vec::new())),
@@ -88,13 +88,29 @@ impl FakePty {
   /// 与 `write` 不同，`push_output` 不会记录到 `writes`，也不会受
   /// `echo_mode` 影响。用于在测试中模拟程序主动打印的内容。
   pub fn push_output(&self, data: impl Into<Vec<u8>>) -> Result<()> {
-    self.reader_tx.send_blocking(data.into())?;
+    let tx = self.reader_tx.lock().unwrap();
+    if let Some(tx) = tx.as_ref() {
+      tx.send_blocking(data.into())?;
+    }
     Ok(())
   }
 
   /// 便捷方法：注入字符串输出。
   pub fn push_bytes(&self, data: &str) -> Result<()> {
     self.push_output(data.as_bytes().to_vec())
+  }
+
+  /// 关闭读取端：丢弃内部 sender，使 `reader()` 的接收者收到 EOF
+  /// （`recv()` 返回 `Err`）。用于模拟子进程退出后 PTY 关闭的场景。
+  ///
+  /// 关闭后 `write` 仍会记录数据但不再回显，`push_output` 变为空操作。
+  pub fn close_reader(&self) {
+    *self.reader_tx.lock().unwrap() = None;
+  }
+
+  /// 读取端是否已被 `close_reader` 关闭。
+  pub fn is_reader_closed(&self) -> bool {
+    self.reader_tx.lock().unwrap().is_none()
   }
 
   /// 获取所有通过 `write` 写入的数据快照。
@@ -136,8 +152,11 @@ impl Pty for FakePty {
 
     let mode = *self.echo_mode.lock().unwrap();
     if mode == EchoMode::Echo {
-      // 克隆一份回显，避免消耗原始数据所有权语义混乱
-      self.reader_tx.send(data).await?;
+      // 先克隆出 sender 再 await，避免跨 await 持有 MutexGuard（要求 Send）
+      let tx = self.reader_tx.lock().unwrap().clone();
+      if let Some(tx) = tx {
+        tx.send(data).await?;
+      }
     }
     Ok(())
   }
@@ -220,5 +239,34 @@ mod tests {
     assert_eq!(rec.cols, 80);
     assert_eq!(rec.pixel_width, 5);
     assert_eq!(rec.pixel_height, 7);
+  }
+
+  #[gpui::test]
+  async fn close_reader_makes_recv_return_err() {
+    let pty = FakePty::new();
+    let rx = pty.reader();
+    assert!(!pty.is_reader_closed());
+
+    pty.close_reader();
+    assert!(pty.is_reader_closed());
+
+    // 接收端应收到 EOF（recv 返回 Err）
+    assert!(rx.recv().await.is_err());
+  }
+
+  #[gpui::test]
+  async fn close_reader_makes_write_no_longer_echo() {
+    let pty = FakePty::new();
+    pty.write(b"before".to_vec()).await.unwrap();
+    assert_eq!(pty.pending_output_count(), 1);
+
+    pty.close_reader();
+    // 关闭后 write 仍记录，但不再回显
+    pty.write(b"after".to_vec()).await.unwrap();
+    assert_eq!(pty.pending_output_count(), 1); // 仍是 1
+    assert_eq!(pty.writes_string(), "beforeafter");
+    // push_output 关闭后变为空操作
+    assert!(pty.push_bytes("ignored").is_ok());
+    assert_eq!(pty.pending_output_count(), 1);
   }
 }

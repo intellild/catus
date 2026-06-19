@@ -180,8 +180,42 @@ impl Workspace {
     }
   }
 
+  /// 用给定的 PTY 创建初始 tab，便于测试向终端注入输出（如 OSC 标题序列）。
+  pub(crate) fn new_with_pty(
+    kind: WorkspaceKind,
+    pty: Arc<dyn crate::terminal::Pty>,
+    cx: &mut gpui::Context<Self>,
+  ) -> Self {
+    match Self::make_tab_with_pty(cx, pty) {
+      Ok(tab) => {
+        let active_tab_id = Some(tab.id);
+        Self {
+          kind,
+          tabs: vec![tab],
+          active_tab_id,
+        }
+      }
+      Err(e) => {
+        eprintln!("Failed to create default terminal: {}", e);
+        Self {
+          kind,
+          tabs: vec![],
+          active_tab_id: None,
+        }
+      }
+    }
+  }
+
   fn make_tab_with_fake_pty(cx: &mut gpui::Context<Self>) -> Result<TabItem, String> {
     let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
+    Self::make_tab_with_pty(cx, pty)
+  }
+
+  /// 用给定的 PTY 创建初始 tab，供需要向终端注入数据的测试使用。
+  fn make_tab_with_pty(
+    cx: &mut gpui::Context<Self>,
+    pty: Arc<dyn crate::terminal::Pty>,
+  ) -> Result<TabItem, String> {
     let terminal_view = Self::create_terminal_view_with_pty(cx, pty)?;
     let workspace_handle = cx.entity().clone();
     let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
@@ -278,5 +312,67 @@ mod tests {
     ws.read_with(cx, |w, _| {
       assert_eq!(w.display_name().as_ref(), "ssh h");
     });
+  }
+
+  /// 注入 OSC 标题序列后，验证 tab 实际展示的标题（即 PaneGroup::active_leaf_title）
+  /// 能跟随更新。覆盖链路：
+  /// PTY 输出 → Terminal 解析 OSC → TerminalEvent::TitleChanged →
+  /// TerminalViewEvent::TitleChanged → Workspace/PaneGroup 订阅 → active_leaf_title。
+  #[gpui::test]
+  fn tab_title_updates_from_osc_sequence(cx: &mut TestAppContext) {
+    use crate::terminal::fake_pty::EchoMode;
+    use gpui::AppContext as _;
+
+    // 保留底层 FakePty 引用，以便注入输出
+    let fake = Arc::new(crate::terminal::FakePty::with_echo_mode(EchoMode::None));
+    let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
+    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+
+    // 初始 tab 标题应为 "Terminal"
+    let initial = ws.read_with(cx, |w, cx| {
+      let pane = w.active_tab().expect("has tab").pane_group.clone();
+      pane.read(cx).active_leaf_title(cx)
+    });
+    assert_eq!(initial.as_deref(), Some("Terminal"));
+
+    // 注入 OSC 标题序列: ESC ] 2 ; My Tab Title BEL
+    fake.push_bytes("\x1b]2;My Tab Title\x07").unwrap();
+    cx.run_until_parked();
+
+    // tab 标题应已更新为新标题
+    let updated = ws.read_with(cx, |w, cx| {
+      let pane = w.active_tab().expect("has tab").pane_group.clone();
+      pane.read(cx).active_leaf_title(cx)
+    });
+    assert_eq!(updated.as_deref(), Some("My Tab Title"));
+  }
+
+  /// 验证空标题的 OSC 序列不会把 tab 标题覆盖成空字符串。
+  #[gpui::test]
+  fn tab_title_not_overwritten_by_empty_osc(cx: &mut TestAppContext) {
+    use crate::terminal::fake_pty::EchoMode;
+    use gpui::AppContext as _;
+
+    let fake = Arc::new(crate::terminal::FakePty::with_echo_mode(EchoMode::None));
+    let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
+    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+
+    // 先设置一个标题
+    fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
+    cx.run_until_parked();
+    let title = ws.read_with(cx, |w, cx| {
+      let pane = w.active_tab().expect("has tab").pane_group.clone();
+      pane.read(cx).active_leaf_title(cx)
+    });
+    assert_eq!(title.as_deref(), Some("Real Title"));
+
+    // 再注入空标题，tab 标题不应被覆盖
+    fake.push_bytes("\x1b]2;   \x07").unwrap();
+    cx.run_until_parked();
+    let title = ws.read_with(cx, |w, cx| {
+      let pane = w.active_tab().expect("has tab").pane_group.clone();
+      pane.read(cx).active_leaf_title(cx)
+    });
+    assert_eq!(title.as_deref(), Some("Real Title"));
   }
 }
