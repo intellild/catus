@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-commit hook: 当有 Rust 文件改动时，运行 fmt / check / clippy / test。
+#
+# 安装（在仓库根目录执行一次）：
+#   git config core.hooksPath .githooks
+# 或运行：
+#   ./scripts/install-git-hooks.sh
+#
+# 跳过本次检查（临时）：
+#   git commit --no-verify
+
+set -euo pipefail
+
+# 只关心暂存区（staged）的改动。
+staged_rs=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' 'Cargo.toml' 'Cargo.lock')
+
+if [ -z "$staged_rs" ]; then
+  echo "[pre-commit] No Rust/Cargo changes staged, skipping checks."
+  exit 0
+fi
+
+# 仓库根目录（hook 运行时工作目录是仓库根）。
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+# 项目的测试需要 test-support feature。
+FEATURES="test-support"
+
+echo "[pre-commit] Rust changes detected, running checks..."
+
+run() {
+  echo
+  echo "==> $*"
+  if ! "$@"; then
+    echo
+    echo "[pre-commit] FAILED: $*"
+    echo "[pre-commit] 修复后重新 git add 并 commit；或用 git commit --no-verify 跳过。"
+    exit 1
+  fi
+}
+
+# 1. 格式检查（不修改文件，失败时提示运行 cargo fmt）
+run cargo fmt --check
+
+# 2. 编译检查（含 test-support 以覆盖测试代码）
+run cargo check --features "$FEATURES" --all-targets
+
+# 3. Clippy（警告即失败，覆盖所有 target）
+run cargo clippy --features "$FEATURES" --all-targets -- -D warnings
+
+# 4. 测试
+run cargo test --features "$FEATURES"
+
+echo
+echo "[pre-commit] All checks passed."

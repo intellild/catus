@@ -73,4 +73,5 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - Rust 行为变更后至少运行 `cargo check`；涉及终端输入、PTY、pane 或 tab 的变更应补充更具体的验证。
 - 运行测试用 `cargo test --features test-support`。该 feature 启用 gpui 的 `test-support`，提供 `TestAppContext` / `#[gpui::test]`。纯逻辑测试用内置 `#[test]`，需要异步或 GPUI 实体的测试用 `#[gpui::test]`。
 - 测试中需要终端时优先用 `FakePty`（`crate::terminal::FakePty`）而非 `LocalPty`，避免启动真实 shell。`Workspace` 与 `App` 各有 `#[cfg(test)]` 构造函数（`new_with_fake_pty` / `with_workspaces`）复用 `FakePty`。
+- 仓库带可选的 pre-commit hook（`.githooks/pre-commit`），会运行 `cargo fmt --check` / `check` / `clippy -D warnings` / `test --features test-support`。安装：`./scripts/install-git-hooks.sh`（即 `git config core.hooksPath .githooks`）；跳过：`git commit --no-verify`。
 - 保持文档和源码一致。不要在 `AGENTS.md` 中保留字段级代码块、长流程图或尚未实现的能力说明，除非它们会被持续维护。

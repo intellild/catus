@@ -601,9 +601,10 @@ mod tests {
 
   /// 构造一个指定字符的单元格。
   fn cell_with(c: char) -> alacritty_terminal::term::cell::Cell {
-    let mut cell = alacritty_terminal::term::cell::Cell::default();
-    cell.c = c;
-    cell
+    alacritty_terminal::term::cell::Cell {
+      c,
+      ..Default::default()
+    }
   }
 
   /// 构造位于 (line, col) 的单元格。

@@ -25,6 +25,21 @@ cargo run
 
 Requires a Rust toolchain. On first build, dependencies are fetched automatically.
 
+## Git Hooks (optional, recommended)
+
+A pre-commit hook runs `cargo fmt --check`, `cargo check`, `cargo clippy`, and
+`cargo test` whenever `.rs` / `Cargo.toml` / `Cargo.lock` changes are staged.
+Install it once per clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+Skip it for a single commit with `git commit --no-verify`, and uninstall with
+`git config --unset core.hooksPath`.
+
+Running tests requires the `test-support` feature: `cargo test --features test-support`.
+
 ## Disclaimer
 
 > **This project is vibe coded without careful review. Use it at your own risk.**
