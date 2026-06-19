@@ -40,6 +40,50 @@ Skip it for a single commit with `git commit --no-verify`, and uninstall with
 
 Running tests requires the `test-support` feature: `cargo test --features test-support`.
 
+## Visual Tests (Midscene)
+
+End-to-end visual tests drive the running Catus app with
+[Midscene](https://midscenejs.com/) via `@midscene/computer` (AI-powered desktop
+automation) and are run with [Rstest](https://rstest.rs/). Tests live in
+`e2e/`, the app-launch fixture in `fixtures/`, and the rest of the
+JS tooling (`package.json`, `rstest.config.ts`, `setup.ts`, `tsconfig.json`,
+`.env.example`) sits at the repo root.
+
+### Prerequisites
+
+- Node.js >= 20.19.0 and pnpm.
+- A Rust toolchain (the tests launch the locally built `catus` binary).
+- **macOS:** grant Accessibility permission to the app that runs the tests
+  (Terminal / iTerm / your editor) under
+  *System Settings > Privacy & Security > Accessibility*, otherwise Midscene
+  cannot control the keyboard and mouse. See
+  [Midscene macOS setup](https://midscenejs.com/zh/computer-getting-started.html).
+- An OpenAI-compatible multimodal model with visual grounding (e.g. Qwen3-VL,
+  GLM-4.6V, Doubao Seed, Gemini 3.x). See the
+  [model strategy](https://midscenejs.com/zh/model-strategy.html).
+
+### Setup
+
+Install JS dependencies and configure the model:
+
+```bash
+pnpm install
+cp .env.example .env   # then fill in your model credentials
+```
+
+The `.env` file provides `MIDSCENE_MODEL_BASE_URL`, `MIDSCENE_MODEL_API_KEY`,
+`MIDSCENE_MODEL_NAME`, and `MIDSCENE_MODEL_FAMILY`. It is loaded automatically
+by `setup.ts` (registered via `setupFiles` in `rstest.config.ts`).
+
+### Run
+
+```bash
+pnpm test        # builds the catus binary (cargo build) then runs the visual tests
+pnpm test:watch  # same, in watch mode
+```
+
+Midscene writes HTML reports and dumps under `midscene_run/` (git-ignored).
+
 ## Disclaimer
 
 > **This project is vibe coded without careful review. Use it at your own risk.**

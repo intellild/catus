@@ -1,0 +1,14 @@
+# pnpm settings (pnpm 11+ reads settings from this file instead of the
+# `pnpm` field in package.json).
+#
+# Approve native build scripts for Midscene's computer-mode dependencies:
+#  - sharp: screenshot / image processing (used by @midscene/computer)
+#  - node-mac-permissions: macOS accessibility-permission checks
+allowBuilds:
+  node-mac-permissions: true
+  sharp: true
+
+# Belt-and-suspenders: some pnpm 11.x releases read this list form too.
+onlyBuiltDependencies:
+  - node-mac-permissions
+  - sharp

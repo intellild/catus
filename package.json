@@ -1,0 +1,17 @@
+{
+  "name": "catus-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Midscene visual tests for the Catus terminal client",
+  "type": "module",
+  "scripts": {
+    "pretest": "cargo build",
+    "test": "rstest run ./e2e/",
+    "test:watch": "rstest watch ./e2e/"
+  },
+  "devDependencies": {
+    "@midscene/computer": "latest",
+    "@rstest/core": "^0.10.6",
+    "dotenv": "^17.4.2"
+  }
+}

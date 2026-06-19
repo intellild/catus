@@ -3,3 +3,8 @@
 zed
 temp
 .DS_Store
+.env
+
+# Midscene visual tests (e2e)
+node_modules
+midscene_run
