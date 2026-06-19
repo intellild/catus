@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
+use tracing::info;
 
 use crate::pane::PaneGroup;
 use crate::terminal::{LocalPty, Terminal, TerminalSize, TerminalView, TerminalViewEvent};
@@ -75,6 +76,7 @@ impl Workspace {
     let id = tab.id;
     self.tabs.push(tab);
     self.active_tab_id = Some(id);
+    info!(target: "catus", "added tab id {:?} (total {})", id, self.tabs.len());
     cx.notify();
     id
   }
@@ -85,6 +87,7 @@ impl Workspace {
       if self.active_tab_id == Some(id) {
         self.active_tab_id = self.tabs.get(index.saturating_sub(1)).map(|t| t.id);
       }
+      info!(target: "catus", "closed tab id {:?} (remaining {})", id, self.tabs.len());
       cx.notify();
       return true;
     }
