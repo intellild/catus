@@ -2,7 +2,7 @@ use gpui::*;
 
 use crate::terminal::TerminalView;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum PaneView {
   Terminal(Entity<TerminalView>),
 }

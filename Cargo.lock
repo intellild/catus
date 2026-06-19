@@ -748,7 +748,6 @@ dependencies = [
  "async-channel 2.5.0",
  "async-lock",
  "async-trait",
- "blocking",
  "gpui",
  "gpui-component",
  "gpui-component-assets",

@@ -3,7 +3,6 @@ use crate::terminal::pty::TerminalSize;
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender, unbounded};
 use async_trait::async_trait;
-use blocking::unblock;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::thread;
@@ -16,7 +15,8 @@ enum WriteCommand {
 
 /// 本地 PTY 实现
 ///
-/// 使用 `Arc<Mutex<_>>` 实现内部可变性，支持 `&self` 方法（类似 Zed 的设计）
+/// 使用独立 reader/writer 线程处理阻塞 I/O，通过 `async_channel` 与
+/// UI/任务侧通信。子进程在 `Drop` 时被同步 kill。
 pub struct LocalPty {
   child: Box<dyn Child + Send + Sync>,
   reader_rx: Receiver<Vec<u8>>,
@@ -28,7 +28,8 @@ impl LocalPty {
   ///
   /// # Arguments
   /// * `size` - 终端尺寸
-  /// * `command` - 可选的命令，如果为 None 则启动系统默认 shell
+  /// * `command` - 可选的命令字符串。`None` 启动系统默认 shell；
+  ///   `Some("ssh user@host")` 等会被按空白拆分为程序 + 参数。
   pub fn new(size: TerminalSize, command: Option<&str>) -> Result<Self> {
     let pty_system = portable_pty::native_pty_system();
 
@@ -43,28 +44,16 @@ impl LocalPty {
       .openpty(pty_size)
       .with_context(|| "Failed to open PTY")?;
 
-    // 获取要执行的命令，如果没有提供则使用系统默认 shell
-    let cmd = if let Some(cmd) = command {
-      CommandBuilder::new(cmd)
-    } else {
-      // 使用系统默认 shell
-      #[cfg(target_os = "windows")]
-      {
-        CommandBuilder::new("cmd.exe")
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        // 优先使用用户配置的 shell，否则使用 /bin/sh
-        std::env::var("SHELL")
-          .map(|shell| CommandBuilder::new(&shell))
-          .unwrap_or_else(|_| CommandBuilder::new("/bin/sh"))
-      }
-    };
+    // 构造要执行的命令
+    let cmd = build_command(command);
 
     let child = pty_pair
       .slave
       .spawn_command(cmd)
       .with_context(|| "Failed to spawn command in PTY")?;
+
+    // 丢弃 slave 句柄，确保子进程退出后 master 能收到 EOF
+    drop(pty_pair.slave);
 
     let master = pty_pair.master;
 
@@ -72,12 +61,16 @@ impl LocalPty {
       .try_clone_reader()
       .with_context(|| "Failed to get PTY reader")?;
 
-    // 创建读取通道
+    // 先 take_writer，失败时可以在 drop 中 kill 子进程
+    let writer = master
+      .take_writer()
+      .with_context(|| "Failed to get PTY writer")?;
+
     let (reader_tx, reader_rx) = unbounded::<Vec<u8>>();
     let (writer_tx, writer_rx) = unbounded::<WriteCommand>();
 
     run_reader(reader, reader_tx);
-    run_writer(master, writer_rx)?;
+    run_writer(master, writer, writer_rx);
 
     Ok(Self {
       child,
@@ -87,16 +80,44 @@ impl LocalPty {
   }
 }
 
+/// 将命令字符串按空白拆分为程序名 + 参数。
+///
+/// `portable_pty::CommandBuilder::new` 只接受单个程序路径，不接受
+/// shell 命令行，因此 `"ssh user@host"` 必须拆分为 `ssh` + `user@host`。
+fn build_command(command: Option<&str>) -> CommandBuilder {
+  if let Some(cmd_str) = command {
+    let trimmed = cmd_str.trim();
+    if !trimmed.is_empty() {
+      let mut parts = trimmed.split_whitespace();
+      let program = parts.next().expect("non-empty after trim");
+      let mut cmd = CommandBuilder::new(program);
+      for arg in parts {
+        cmd.arg(arg);
+      }
+      return cmd;
+    }
+  }
+
+  // 系统默认 shell
+  #[cfg(target_os = "windows")]
+  {
+    CommandBuilder::new("cmd.exe")
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    std::env::var("SHELL")
+      .map(|shell| CommandBuilder::new(&shell))
+      .unwrap_or_else(|_| CommandBuilder::new("/bin/sh"))
+  }
+}
+
 #[async_trait]
 impl Pty for LocalPty {
-  /// 写入数据到 PTY
   async fn write(&self, data: Vec<u8>) -> Result<()> {
     self.writer_tx.send(WriteCommand::Write(data)).await?;
-
     Ok(())
   }
 
-  /// 调整 PTY 大小
   async fn resize(&self, size: TerminalSize) -> Result<()> {
     let pty_size = PtySize {
       rows: size.rows,
@@ -104,49 +125,34 @@ impl Pty for LocalPty {
       pixel_width: size.pixel_width,
       pixel_height: size.pixel_height,
     };
-
     self.writer_tx.send(WriteCommand::Resize(pty_size)).await?;
-
     Ok(())
   }
 
   fn reader(&self) -> Receiver<Vec<u8>> {
     self.reader_rx.clone()
   }
-
-  /// 关闭 PTY
-  async fn close(&mut self) -> Result<()> {
-    let _ = self.writer_tx;
-
-    let mut killer = self.child.clone_killer();
-    unblock(move || killer.kill()).await?;
-
-    Ok(())
-  }
 }
 
 impl Drop for LocalPty {
   fn drop(&mut self) {
-    // 确保关闭 PTY
-    let _ = self.close();
+    // 同步 kill 子进程。drop writer_tx / reader_rx 会关闭通道，
+    // reader/writer 线程检测到通道关闭后自行退出。
+    let mut killer = self.child.clone_killer();
+    let _ = killer.kill();
   }
 }
 
 fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) {
-  // 启动读取线程
-  thread::spawn(move || -> Result<()> {
+  thread::spawn(move || {
     loop {
       let mut buf = vec![0u8; 4096];
       match reader.read(&mut buf) {
-        Ok(0) => {
-          // EOF - PTY 关闭
-          break;
-        }
+        Ok(0) => break, // EOF - PTY 关闭
         Ok(size) => {
           buf.resize(size, 0u8);
           if tx.send_blocking(buf).is_err() {
-            // 接收端关闭
-            break;
+            break; // 接收端关闭
           }
         }
         Err(e) => {
@@ -155,29 +161,26 @@ fn run_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) {
         }
       }
     }
-    Ok(())
   });
 }
 
-fn run_writer(master: Box<dyn MasterPty + Send>, rx: Receiver<WriteCommand>) -> Result<()> {
-  let mut writer = master
-    .take_writer()
-    .with_context(|| "Failed to get PTY writer")?;
-
-  thread::spawn(move || -> Result<()> {
-    loop {
-      let cmd = rx.recv_blocking()?;
+fn run_writer(
+  master: Box<dyn MasterPty + Send>,
+  mut writer: Box<dyn Write + Send>,
+  rx: Receiver<WriteCommand>,
+) {
+  thread::spawn(move || {
+    while let Ok(cmd) = rx.recv_blocking() {
       match cmd {
         WriteCommand::Write(data) => {
-          writer.write_all(&data)?;
-          writer.flush()?;
+          if writer.write_all(&data).is_err() || writer.flush().is_err() {
+            break;
+          }
         }
         WriteCommand::Resize(size) => {
-          master.resize(size)?;
+          let _ = master.resize(size);
         }
       }
     }
   });
-
-  Ok(())
 }

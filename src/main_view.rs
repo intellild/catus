@@ -14,9 +14,15 @@ pub struct MainView {
 
 impl MainView {
   pub fn new(app: Entity<App>, cx: &mut Context<Self>) -> Self {
-    let sidebar = cx.new(|_| WorkspaceSidebar::new(app.clone()));
-    let title_bar_tabs = cx.new(|_| TitleBarTabs::new(app.clone()));
-    let title_bar = cx.new(|_| TitleBarRoot::new(title_bar_tabs.into()));
+    // App 变更（workspace 切换、tab 切换、终端标题变化等）→ 重新渲染
+    cx.observe(&app, |_, _, cx| {
+      cx.notify();
+    })
+    .detach();
+
+    let sidebar = cx.new(|cx| WorkspaceSidebar::new(app.clone(), cx));
+    let title_bar_tabs = cx.new(|cx| TitleBarTabs::new(app.clone(), cx));
+    let title_bar = cx.new(|_cx| TitleBarRoot::new(title_bar_tabs.into()));
     Self {
       app,
       sidebar,

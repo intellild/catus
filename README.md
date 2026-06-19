@@ -15,7 +15,7 @@ A local terminal client built with [Rust](https://www.rust-lang.org/) and [GPUI]
 - UI: `gpui`, `gpui-component`
 - Terminal emulation: `alacritty_terminal`
 - PTY: `portable-pty`
-- Async & IPC: GPUI task API, `async-channel`, `async-lock`, `blocking`, `async-trait`
+- Async & IPC: GPUI task API, `async-channel`, `async-lock`, `async-trait`
 
 ## Getting Started
 

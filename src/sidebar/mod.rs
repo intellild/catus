@@ -13,20 +13,26 @@ pub struct WorkspaceSidebar {
 }
 
 impl WorkspaceSidebar {
-  pub fn new(app: Entity<App>) -> Self {
+  pub fn new(app: Entity<App>, cx: &mut Context<Self>) -> Self {
+    cx.observe(&app, |_, _, cx| {
+      cx.notify();
+    })
+    .detach();
     Self { app }
   }
 
   fn handle_select(&mut self, index: usize, cx: &mut Context<Self>) {
-    if self.app.update(cx, |app, _| app.activate_workspace(index)) {
-      cx.notify();
-    }
+    self
+      .app
+      .update(cx, |app, cx| app.activate_workspace(index, cx));
+    cx.notify();
   }
 
   fn handle_close(&mut self, index: usize, cx: &mut Context<Self>) {
-    if self.app.update(cx, |app, _| app.close_workspace(index)) {
-      cx.notify();
-    }
+    self
+      .app
+      .update(cx, |app, cx| app.close_workspace(index, cx));
+    cx.notify();
   }
 
   fn handle_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {

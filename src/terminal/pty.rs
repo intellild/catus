@@ -39,6 +39,8 @@ impl TerminalSize {
 /// 内部通过 `Arc<Mutex<_>>` 实现可变性。
 ///
 /// 需要 `Send + Sync` bound 以支持多线程访问。
+///
+/// 资源清理由具体实现的 `Drop` 负责关闭子进程和释放 PTY 资源。
 #[async_trait]
 pub trait Pty: Send + Sync {
   /// 写入数据到 PTY
@@ -67,12 +69,4 @@ pub trait Pty: Send + Sync {
   /// # Returns
   /// 返回一个异步通道接收器，用于接收 PTY 输出的数据
   fn reader(&self) -> Receiver<Vec<u8>>;
-
-  /// 关闭 PTY
-  ///
-  /// 清理资源，终止子进程。
-  ///
-  /// # Errors
-  /// 如果关闭失败则返回错误
-  async fn close(&mut self) -> Result<()>;
 }

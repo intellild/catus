@@ -4,7 +4,7 @@ use gpui_component::ActiveTheme;
 
 use crate::pane::any_view::PaneView;
 use crate::pane::pane_node::{PaneLeafId, PaneNode, SplitDirection};
-use crate::terminal::TerminalView;
+use crate::terminal::{TerminalView, TerminalViewEvent};
 use crate::workspace::Workspace;
 
 actions!(pane, [SplitRight, SplitDown, ClosePane]);
@@ -24,6 +24,7 @@ impl PaneGroup {
     cx: &mut Context<Self>,
   ) -> Self {
     let leaf_id = PaneLeafId(1);
+    Self::subscribe_to_view(cx, &initial_view);
     Self {
       root: PaneNode::new_leaf(leaf_id, PaneView::Terminal(initial_view)),
       active_leaf_id: Some(leaf_id),
@@ -33,19 +34,31 @@ impl PaneGroup {
     }
   }
 
+  /// 订阅 TerminalView 事件，子进程退出时自动关闭对应 pane。
+  fn subscribe_to_view(cx: &mut Context<Self>, view: &Entity<TerminalView>) {
+    let view_clone = view.clone();
+    cx.subscribe(view, move |this, _view, event: &TerminalViewEvent, cx| {
+      if matches!(event, TerminalViewEvent::Closed) {
+        this.close_leaf_by_view(&view_clone, cx);
+      }
+    })
+    .detach();
+  }
+
   fn create_terminal_view(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
-    let terminal =
-      self
-        .workspace
-        .update(cx, |workspace, cx| match workspace.create_terminal(cx) {
-          Ok(t) => Some(t),
-          Err(e) => {
-            eprintln!("Failed to create terminal: {}", e);
-            None
-          }
-        })?;
-    let view = cx.new(|cx| TerminalView::new(terminal, cx));
-    Some(view)
+    let result = self
+      .workspace
+      .update(cx, |ws, cx| Workspace::create_terminal_view(cx, &ws.kind));
+    match result {
+      Ok(view) => {
+        Self::subscribe_to_view(cx, &view);
+        Some(view)
+      }
+      Err(e) => {
+        eprintln!("Failed to create terminal: {}", e);
+        None
+      }
+    }
   }
 
   fn split_pane(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
@@ -77,6 +90,30 @@ impl PaneGroup {
     self.root.remove_leaf(active_id);
     self.active_leaf_id = new_focus;
     cx.notify();
+  }
+
+  /// 按视图关闭对应的叶子节点。用于子进程退出时自动清理。
+  fn close_leaf_by_view(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+    let target = PaneView::Terminal(view.clone());
+    let Some(leaf_id) = self.root.find_leaf_id_by_view(&target) else {
+      return;
+    };
+    // 只剩一个叶子时不自动关闭，保留 "Process exited" 显示
+    if self.root.leaf_count() <= 1 {
+      return;
+    }
+    let new_focus = self
+      .root
+      .next_leaf_after(leaf_id)
+      .or_else(|| self.root.prev_leaf_before(leaf_id));
+    self.root.remove_leaf(leaf_id);
+    self.active_leaf_id = new_focus;
+    cx.notify();
+  }
+
+  /// 获取第一个叶子节点的终端标题（用于 tab 标题）。
+  pub fn first_leaf_title(&self, cx: &App) -> Option<String> {
+    self.root.first_leaf_view().map(|v| v.title(cx))
   }
 
   fn on_action_split_right(&mut self, _: &SplitRight, _: &mut Window, cx: &mut Context<Self>) {
@@ -184,7 +221,7 @@ impl Render for PaneGroup {
       .child(Self::render_node(
         &self.root,
         self.root.leaf_count() > 1,
-        &cx,
+        cx,
       ))
   }
 }

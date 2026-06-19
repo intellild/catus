@@ -1,4 +1,5 @@
-use crate::terminal::terminal::Terminal;
+use crate::terminal::content::TerminalEvent;
+use crate::terminal::model::Terminal;
 use crate::terminal::terminal_element::TerminalElement;
 use gpui::*;
 use gpui_component::ActiveTheme;
@@ -14,22 +15,52 @@ actions!(
   ]
 );
 
+/// `TerminalView` 向外发射的事件，供 `PaneGroup` / `Workspace` 订阅。
+#[derive(Clone, Debug)]
+pub enum TerminalViewEvent {
+  /// 终端标题变更（OSC 序列）。
+  TitleChanged,
+  /// 子进程退出。
+  Closed,
+}
+
 /// Terminal view component using GPUI
 pub struct TerminalView {
   terminal: Entity<Terminal>,
   focus_handle: FocusHandle,
+  closed: bool,
 }
 
 impl TerminalView {
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
   pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
-    cx.observe(&terminal, |_this, _terminal, cx| {
+    // Terminal notify → 重新渲染
+    cx.observe(&terminal, |_, _, cx| {
       cx.notify();
     })
     .detach();
+
+    // Terminal event → 转发为 TerminalViewEvent
+    cx.subscribe(
+      &terminal,
+      |this, terminal, event: &TerminalEvent, cx| match event {
+        TerminalEvent::TitleChanged => {
+          cx.emit(TerminalViewEvent::TitleChanged);
+        }
+        TerminalEvent::Closed => {
+          this.closed = terminal.read(cx).is_closed();
+          cx.emit(TerminalViewEvent::Closed);
+          cx.notify();
+        }
+        TerminalEvent::Bell => {}
+      },
+    )
+    .detach();
+
     Self {
       terminal,
       focus_handle: cx.focus_handle(),
+      closed: false,
     }
   }
 
@@ -103,6 +134,15 @@ impl TerminalView {
       return;
     }
 
+    // Plain Tab 和 Shift+Tab 由 Tab/TabPrev action 处理，避免双重输入。
+    // Ctrl+Tab / Ctrl+Shift+Tab 仍然走 encode_keystroke。
+    if event.keystroke.key == "tab"
+      && !event.keystroke.modifiers.control
+      && !event.keystroke.modifiers.alt
+    {
+      return;
+    }
+
     let data = encode_keystroke(&event.keystroke);
     if data.is_empty() {
       return;
@@ -120,8 +160,25 @@ impl TerminalView {
   }
 }
 
+impl EventEmitter<TerminalViewEvent> for TerminalView {}
+
 impl Render for TerminalView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    if self.closed {
+      return div()
+        .id("terminal-view")
+        .key_context("Terminal")
+        .size_full()
+        .bg(cx.theme().background)
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(cx.theme().muted_foreground)
+        .text_sm()
+        .child("Process exited")
+        .into_any_element();
+    }
+
     let terminal = self.terminal.clone();
     let show_scroll_button =
       self.terminal.read(cx).user_has_scrolled() && !self.terminal.read(cx).scrolled_to_bottom();
@@ -173,6 +230,7 @@ impl Render for TerminalView {
             }),
           )
       }))
+      .into_any_element()
   }
 }
 
@@ -187,10 +245,11 @@ fn encode_keystroke(keystroke: &Keystroke) -> Vec<u8> {
   let modifiers = &keystroke.modifiers;
   let key = keystroke.key.as_str();
 
-  if modifiers.control && !modifiers.alt && !modifiers.shift {
-    if let Some(ctrl_byte) = encode_ctrl_key(key) {
-      return ctrl_byte;
-    }
+  if modifiers.control
+    && !modifiers.alt
+    && let Some(ctrl_byte) = encode_ctrl_key(key)
+  {
+    return ctrl_byte;
   }
 
   if modifiers.alt {
@@ -242,9 +301,6 @@ fn encode_base_key(keystroke: &Keystroke, key: &str, modifiers: &Modifiers) -> V
     }
     "escape" | "esc" => return vec![0x1b],
     "tab" | "\t" => {
-      if modifiers.shift && !modifiers.control {
-        return vec![0x1b, b'[', b'Z'];
-      }
       if modifiers.control && modifiers.shift {
         return vec![0x1b, b'[', b'1', b';', b'6', b'u'];
       }
@@ -339,10 +395,10 @@ fn encode_base_key(keystroke: &Keystroke, key: &str, modifiers: &Modifiers) -> V
     return result;
   }
 
-  if let Some(key_char) = &keystroke.key_char {
-    if !key_char.is_empty() {
-      return key_char.as_bytes().to_vec();
-    }
+  if let Some(key_char) = &keystroke.key_char
+    && !key_char.is_empty()
+  {
+    return key_char.as_bytes().to_vec();
   }
   if key.len() == 1 {
     return key.as_bytes().to_vec();
@@ -351,10 +407,7 @@ fn encode_base_key(keystroke: &Keystroke, key: &str, modifiers: &Modifiers) -> V
 }
 
 fn encode_function_key(key: &str, modifiers: &Modifiers) -> Vec<u8> {
-  let num: Option<u8> = key
-    .trim_start_matches(|c: char| c == 'f' || c == 'F')
-    .parse()
-    .ok();
+  let num: Option<u8> = key.trim_start_matches(['f', 'F']).parse().ok();
   let Some(n) = num else { return vec![] };
 
   let modifier_param = if modifiers.control && modifiers.shift {

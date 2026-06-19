@@ -5,13 +5,18 @@ use gpui_component::tab::{Tab, TabBar, TabVariant};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, WindowExt};
 
 use crate::app::App;
+use crate::workspace::Workspace;
 
 pub struct TitleBarTabs {
   app: Entity<App>,
 }
 
 impl TitleBarTabs {
-  pub fn new(app: Entity<App>) -> Self {
+  pub fn new(app: Entity<App>, cx: &mut Context<Self>) -> Self {
+    cx.observe(&app, |_, _, cx| {
+      cx.notify();
+    })
+    .detach();
     Self { app }
   }
 
@@ -19,10 +24,7 @@ impl TitleBarTabs {
   fn with_active_workspace<R>(
     &self,
     cx: &mut Context<Self>,
-    f: impl FnOnce(
-      &mut crate::workspace::Workspace,
-      &mut gpui::Context<crate::workspace::Workspace>,
-    ) -> R,
+    f: impl FnOnce(&mut Workspace, &mut gpui::Context<Workspace>) -> R,
   ) -> Option<R> {
     self.app.update(cx, |app, cx| {
       app
@@ -38,13 +40,12 @@ impl TitleBarTabs {
       .active_workspace()
       .and_then(|ws| ws.read(cx).tabs.get(index))
       .map(|tab| tab.id);
-    if let Some(id) = id {
-      if self
-        .with_active_workspace(cx, |ws, _| ws.activate_tab(id))
+    if let Some(id) = id
+      && self
+        .with_active_workspace(cx, |ws, cx| ws.activate_tab(id, cx))
         .unwrap_or(false)
-      {
-        cx.notify();
-      }
+    {
+      cx.notify();
     }
   }
 
@@ -55,13 +56,12 @@ impl TitleBarTabs {
       .active_workspace()
       .and_then(|ws| ws.read(cx).tabs.get(index))
       .map(|tab| tab.id);
-    if let Some(id) = id {
-      if self
-        .with_active_workspace(cx, |ws, _| ws.close_tab(id))
+    if let Some(id) = id
+      && self
+        .with_active_workspace(cx, |ws, cx| ws.close_tab(id, cx))
         .unwrap_or(false)
-      {
-        cx.notify();
-      }
+    {
+      cx.notify();
     }
   }
 
@@ -98,13 +98,14 @@ impl Render for TitleBarTabs {
           .on_click(cx.listener(|this, ix: &usize, window, cx| {
             this.handle_tab_click(*ix, window, cx);
           }))
-          .children((0..tabs_len).map(|_ix| {
+          .children((0..tabs_len).map(|ix| {
             // 当前 workspace 的每个 tab 渲染一个 Tab。
-            let icon = active_workspace
-              .and_then(|ws| ws.read(cx).tabs.get(_ix))
-              .map(|tab| tab.state.read(cx).icon.clone())
-              .unwrap_or(IconName::SquareTerminal);
-            let title: SharedString = "Terminal".into();
+            let (icon, title) = active_workspace
+              .and_then(|ws| ws.read(cx).tabs.get(ix))
+              .and_then(|tab| tab.pane_group.read(cx).first_leaf_title(cx))
+              .map(|title| (IconName::SquareTerminal, title))
+              .unwrap_or((IconName::SquareTerminal, "Terminal".to_string()));
+            let title: SharedString = title.into();
 
             Tab::new().label(title).icon(icon).suffix(
               div()
@@ -118,7 +119,7 @@ impl Render for TitleBarTabs {
                 .hover(|style| style.bg(cx.theme().secondary_hover))
                 .on_click(cx.listener(move |this, _, window, cx| {
                   cx.stop_propagation();
-                  this.handle_tab_close(_ix, window, cx);
+                  this.handle_tab_close(ix, window, cx);
                 }))
                 .child(Icon::new(IconName::Close).with_size(px(12.))),
             )

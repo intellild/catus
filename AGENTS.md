@@ -17,7 +17,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - UI: `gpui`, `gpui-component`
 - 终端仿真: `alacritty_terminal`
 - PTY: `portable-pty`
-- 异步与通信: GPUI task API, `async-channel`, `async-lock`, `blocking`, `async-trait`
+- 异步与通信: GPUI task API, `async-channel`, `async-lock`, `async-trait`
 
 ## 关键目录
 
@@ -29,7 +29,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，选择类型并填写命令。
 - `src/main_view.rs`: 主视图，组合侧边栏与当前 workspace 的 title bar + pane 区，render 时从 `App` 解析激活的 workspace。
 - `src/pane/`: Pane tree、分割和关闭逻辑。
-- `src/terminal/terminal.rs`: `Terminal` 协调器，连接 PTY、alacritty 状态和渲染状态。
+- `src/terminal/model.rs`: `Terminal` 协调器，连接 PTY、alacritty 状态和渲染状态。
 - `src/terminal/local_pty.rs`: 本地 PTY 实现，使用独立 reader/writer 线程处理阻塞 I/O。
 - `src/terminal/view.rs`: 终端 GPUI view、键盘输入、滚轮、复制粘贴。
 - `src/terminal/terminal_element.rs`: 低层 GPUI `Element`，负责 prepaint 同步和 paint 渲染。
@@ -37,19 +37,20 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 ## 终端架构约定
 
-- `Terminal` 是协调器，不直接绘制 UI。它持有 `TerminalContent`、`Arc<async_lock::Mutex<Term>>`、`Arc<dyn Pty>`、当前尺寸、标题、滚动状态和选择状态。
+- `Terminal` 是协调器，不直接绘制 UI。它持有 `TerminalContent`、`Arc<async_lock::Mutex<Term>>`、`Arc<dyn Pty>`、当前尺寸、标题、滚动状态、选择状态和 `closed` 标志。
 - `Term` 是 `alacritty_terminal::Term<EventProxy>` 与 VTE `Processor` 的内部适配层。PTY 输出到达后只做 VTE 解析和 `cx.notify()`。
 - `TerminalElement::prepaint()` 是渲染数据的消费点：先 `sync_size()`，再 `refresh_content()`，最后 paint 使用快照后的 `TerminalContent`。
 - 保持“生产/消费分离”：后台 PTY reader 只推进 alacritty 状态；可见 UI 帧才提取可渲染数据。
-- `LocalPty` 使用 `std::thread::spawn` 处理阻塞读写，通过 `async_channel` 与 UI/任务侧通信。
-- `Pty` trait 使用 `&self` 的 async 方法，内部可变性由具体实现负责。
-- `Workspace::create_terminal_entity` 是创建终端的唯一入口，用 `kind.command()` 作为 `LocalPty::new` 的命令；`None` 表示系统默认 shell，`Some("ssh ...")` 用于 SSH workspace。
+- `LocalPty` 使用 `std::thread::spawn` 处理阻塞读写，通过 `async_channel` 与 UI/任务侧通信。命令字符串按空白拆分为程序 + 参数后传给 `CommandBuilder`。子进程在 `Drop` 时同步 kill。
+- `Pty` trait 使用 `&self` 的 async 方法，内部可变性由具体实现负责。资源清理由具体实现的 `Drop` 负责。
+- `Workspace::create_terminal_view` 是创建终端的唯一入口，用 `kind.command()` 作为 `LocalPty::new` 的命令；`None` 表示系统默认 shell，`Some("ssh user@host")` 用于 SSH workspace。命令字符串会被拆分为程序名和参数。
 - `MainView` 在 render 时从 `App::active_workspace()` 解析当前 workspace，因此切换 workspace 不需要重建 title bar / pane。
+- 响应式链路：`Terminal` notify → `TerminalView` observe → `TerminalViewEvent` → `Workspace` subscribe → `App` observe workspace → `MainView` / `WorkspaceSidebar` / `TitleBarTabs` observe App。`App` 和 `Workspace` 的变更方法都调用 `cx.notify()`。
 
 ## GPUI 约定
 
 - 修改实体状态时使用 `Entity::update` / `cx.notify()` 触发 UI 更新。
-- 无特殊要求时，后台异步工作优先使用 GPUI 提供的 task API；阻塞 I/O 放到专门线程或 `blocking` 中。
+- 无特殊要求时，后台异步工作优先使用 GPUI 提供的 task API；阻塞 I/O 放到专门线程。
 - 终端渲染使用低层 `Element` API；涉及 layout/prepaint/paint 时先参考 `src/terminal/terminal_element.rs` 的现有生命周期。
 - 新增 GPUI action 或 key binding 时，让 action 定义、`.key_context(...)`、`.on_action(...)` 和 `cx.bind_keys(...)` 保持在同一语义层级。
 

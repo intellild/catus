@@ -95,6 +95,7 @@ impl Default for CursorState {
 pub struct TerminalContent {
   pub cells: Vec<IndexedCell>,
   pub mode: TermMode,
+  #[allow(dead_code)]
   pub display_offset: usize,
   pub cursor: CursorState,
   pub cursor_char: char,

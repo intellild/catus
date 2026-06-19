@@ -107,13 +107,32 @@ impl PaneNode {
     matches!(self, PaneNode::Leaf { .. })
   }
 
+  /// 查找第一个叶子节点的视图（用于获取 tab 标题等）。
+  pub fn first_leaf_view(&self) -> Option<&PaneView> {
+    match self {
+      PaneNode::Leaf { view, .. } => Some(view),
+      PaneNode::Split { children, .. } => children.first().and_then(|c| c.first_leaf_view()),
+    }
+  }
+
+  /// 按视图查找叶子节点的 ID。
+  pub fn find_leaf_id_by_view(&self, target: &PaneView) -> Option<PaneLeafId> {
+    match self {
+      PaneNode::Leaf { id, view } if view == target => Some(*id),
+      PaneNode::Leaf { .. } => None,
+      PaneNode::Split { children, .. } => {
+        children.iter().find_map(|c| c.find_leaf_id_by_view(target))
+      }
+    }
+  }
+
   /// Collapse if only one child remains.
   fn collapse_if_single(&mut self) {
-    if let PaneNode::Split { children, .. } = self {
-      if children.len() == 1 {
-        let child = children.remove(0);
-        let _ = std::mem::replace(self, child);
-      }
+    if let PaneNode::Split { children, .. } = self
+      && children.len() == 1
+    {
+      let child = children.remove(0);
+      let _ = std::mem::replace(self, child);
     }
   }
 

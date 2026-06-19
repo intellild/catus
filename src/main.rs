@@ -3,7 +3,6 @@ use gpui_component::{Root, Theme, ThemeMode};
 
 mod add_workspace_dialog;
 mod app;
-mod id;
 mod main_view;
 mod pane;
 mod sidebar;
@@ -37,7 +36,7 @@ fn main() {
       KeyBinding::new("cmd-w", ClosePane, Some("Pane")),
     ]);
 
-    let catus_app = cx.new(|cx| CatusApp::new(cx));
+    let catus_app = cx.new(CatusApp::new);
 
     cx.open_window(
       WindowOptions {

@@ -1,6 +1,7 @@
 use crate::terminal::content::{TerminalContent, ansi_color_to_rgb, rgb_to_hsla};
-use crate::terminal::terminal::Terminal;
+use crate::terminal::model::Terminal;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::*;
 use gpui_component::ActiveTheme;
 use std::mem;
@@ -51,6 +52,14 @@ impl BatchedTextRun {
   }
 }
 
+/// 终端文本绘制布局参数
+struct PaintLayout<'a> {
+  font: &'a Font,
+  font_size: Pixels,
+  char_width: Pixels,
+  char_height: Pixels,
+}
+
 /// 终端渲染元素
 ///
 /// 数据流的「消费」侧：prepaint 阶段调用 Terminal::refresh_content()
@@ -89,12 +98,11 @@ impl TerminalElement {
     }
   }
 
-  /// 计算并更新字符尺寸
-  /// 只在首次调用时实际计算，避免每次 prepaint 的浮点误差导致不必要的 resize
+  /// 计算字符尺寸。
+  ///
+  /// `TerminalElement` 每帧由 `TerminalView::render` 重新创建，
+  /// 因此这里每帧都会执行一次计算。字体 advance 查询开销很小，可以接受。
   fn calculate_char_dimensions(&mut self, window: &mut Window) {
-    if self.char_width != px(8.) || self.char_height != px(16.) {
-      return;
-    }
     let font = Self::create_font();
     let font_id = window.text_system().resolve_font(&font);
     if let Ok(advance) = window.text_system().advance(font_id, px(14.), 'm') {
@@ -123,6 +131,11 @@ impl TerminalElement {
     }
   }
 
+  /// 判断单元格背景是否为终端默认背景色
+  fn is_default_bg(color: &AnsiColor) -> bool {
+    matches!(color, AnsiColor::Named(NamedColor::Background))
+  }
+
   /// 绘制单元格背景
   fn paint_cell_background(
     window: &mut Window,
@@ -133,9 +146,6 @@ impl TerminalElement {
     char_width: Pixels,
     char_height: Pixels,
   ) {
-    if bg == [30, 30, 30] {
-      return;
-    }
     let bg_color = rgb_to_hsla(bg);
     let bg_bounds = Bounds {
       origin: Point::new(
@@ -154,18 +164,15 @@ impl TerminalElement {
     cursor_row: usize,
     cursor_col: usize,
     cursor_char: char,
-    font: &Font,
-    font_size: Pixels,
-    char_width: Pixels,
-    char_height: Pixels,
+    layout: &PaintLayout,
     cx: &mut App,
   ) {
-    let cursor_x = origin.x + cursor_col as f32 * char_width;
-    let cursor_y = origin.y + cursor_row as f32 * char_height;
+    let cursor_x = origin.x + cursor_col as f32 * layout.char_width;
+    let cursor_y = origin.y + cursor_row as f32 * layout.char_height;
 
     let cursor_bounds = Bounds {
       origin: Point::new(cursor_x, cursor_y),
-      size: Size::new(char_width, char_height),
+      size: Size::new(layout.char_width, layout.char_height),
     };
 
     // 绘制光标背景
@@ -174,7 +181,7 @@ impl TerminalElement {
     // 绘制光标处的字符（反色）
     let cursor_run = Self::create_text_run(
       cursor_char.len_utf8(),
-      font,
+      layout.font,
       gpui::rgb(0x000000).into(),
       false,
     );
@@ -183,11 +190,16 @@ impl TerminalElement {
       .text_system()
       .shape_line(
         cursor_char.to_string().into(),
-        font_size,
+        layout.font_size,
         &[cursor_run],
-        Some(char_width),
+        Some(layout.char_width),
       )
-      .paint(Point::new(cursor_x, cursor_y), char_height, window, cx);
+      .paint(
+        Point::new(cursor_x, cursor_y),
+        layout.char_height,
+        window,
+        cx,
+      );
   }
 
   /// 布局网格 - 将单元格批处理（类似 Zed 的 layout_grid）
@@ -200,7 +212,7 @@ impl TerminalElement {
 
     for indexed in &content.cells {
       let row = indexed.point.line.0 as usize;
-      let col = indexed.point.column.0 as usize;
+      let col = indexed.point.column.0;
       let cell = &indexed.cell;
 
       // 跳过宽字符的 spacer
@@ -226,7 +238,7 @@ impl TerminalElement {
 
       // 跳过空白字符但保留背景
       if c == ' '
-        && bg == [30, 30, 30]
+        && Self::is_default_bg(&cell.bg)
         && !cell.flags.intersects(Flags::UNDERLINE | Flags::STRIKEOUT)
       {
         if let Some(batch) = current_batch.take() {
@@ -254,7 +266,7 @@ impl TerminalElement {
           batched_runs.push(batch);
         }
         // 创建新批次
-        let mut new_batch = BatchedTextRun::new(row as usize, col as usize, fg, bg, bold);
+        let mut new_batch = BatchedTextRun::new(row, col, fg, bg, bold);
         new_batch.append_char(c);
         current_batch = Some(new_batch);
       }
@@ -355,7 +367,7 @@ impl Element for TerminalElement {
     // 先绘制所有单元格背景
     for indexed in &content.cells {
       let row = indexed.point.line.0 as usize;
-      let col = indexed.point.column.0 as usize;
+      let col = indexed.point.column.0;
       let cell = &indexed.cell;
 
       let mut fg = ansi_color_to_rgb(&cell.fg);
@@ -371,7 +383,10 @@ impl Element for TerminalElement {
         bg = fg;
       }
 
-      Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
+      // 默认背景不需要单独绘制（已由整体背景覆盖）
+      if !Self::is_default_bg(&cell.bg) {
+        Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
+      }
     }
 
     // 绘制选择高亮背景
@@ -379,7 +394,7 @@ impl Element for TerminalElement {
       for indexed in &content.cells {
         if selection.contains(indexed.point) {
           let row = indexed.point.line.0 as usize;
-          let col = indexed.point.column.0 as usize;
+          let col = indexed.point.column.0;
           let selection_bounds = Bounds {
             origin: Point::new(
               origin.x + col as f32 * char_width,
@@ -422,7 +437,7 @@ impl Element for TerminalElement {
     // 绘制光标
     let cursor = &content.cursor;
     let cursor_row = cursor.point.line.0 as usize;
-    let cursor_col = cursor.point.column.0 as usize;
+    let cursor_col = cursor.point.column.0;
 
     // 检查光标是否可见（根据光标形状）
     let cursor_visible = layout.cursor_visible
@@ -432,16 +447,19 @@ impl Element for TerminalElement {
       );
 
     if cursor_visible {
+      let text_layout = PaintLayout {
+        font: &font,
+        font_size,
+        char_width,
+        char_height,
+      };
       Self::paint_cursor(
         window,
         origin,
         cursor_row,
         cursor_col,
         content.cursor_char,
-        &font,
-        font_size,
-        char_width,
-        char_height,
+        &text_layout,
         cx,
       );
     }
@@ -452,6 +470,7 @@ impl Element for TerminalElement {
     let char_width = layout.char_width;
     let char_height = layout.char_height;
     let hitbox = layout.hitbox.clone();
+    let hitbox_for_move = hitbox.clone();
 
     // 鼠标按下：开始选择
     let focus_handle = self.focus_handle.clone();
@@ -476,11 +495,14 @@ impl Element for TerminalElement {
       }
     });
 
-    // 鼠标移动：更新选择
+    // 鼠标移动：更新选择（仅在终端区域内拖动时）
     window.on_mouse_event({
       let terminal = terminal.clone();
-      move |event: &MouseMoveEvent, phase, _window, cx| {
-        if phase.bubble() && event.pressed_button == Some(MouseButton::Left) {
+      move |event: &MouseMoveEvent, phase, window, cx| {
+        if phase.bubble()
+          && event.pressed_button == Some(MouseButton::Left)
+          && hitbox_for_move.is_hovered(window)
+        {
           let point =
             terminal
               .read(cx)

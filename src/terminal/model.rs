@@ -164,6 +164,7 @@ pub struct Terminal {
   title: String,
   user_has_scrolled: bool,
   selection: Option<SelectionRange>,
+  closed: bool,
 }
 
 impl Terminal {
@@ -210,33 +211,43 @@ impl Terminal {
     // alacritty 事件处理
     // 处理 PTY 回写（光标位置响应等）、标题变更、响铃、退出等异步事件
     let pty_clone = pty.clone();
-    cx.spawn(async move |entity, cx| -> Result<()> {
+    cx.spawn(async move |entity, cx| {
       use alacritty_terminal::event::Event;
       loop {
-        let event = events_rx.recv().await?;
+        let event = match events_rx.recv().await {
+          Ok(event) => event,
+          Err(_) => break,
+        };
 
         match event {
           Event::Title(title) => {
-            entity.update(cx, |terminal, cx| {
-              terminal.title = title.clone();
-              cx.emit(TerminalEvent::TitleChanged);
-            })?;
+            if entity
+              .update(cx, |terminal, cx| {
+                terminal.title = title.clone();
+                cx.emit(TerminalEvent::TitleChanged);
+              })
+              .is_err()
+            {
+              break;
+            }
           }
           Event::PtyWrite(data) => {
-            pty_clone.write(data.into_bytes()).await?;
+            let _ = pty_clone.write(data.into_bytes()).await;
           }
           Event::Wakeup => {
-            entity.update(cx, |_, cx| cx.notify())?;
+            let _ = entity.update(cx, |_, cx| cx.notify());
           }
           Event::Bell => {
-            entity.update(cx, |_, cx| {
+            let _ = entity.update(cx, |_, cx| {
               cx.emit(TerminalEvent::Bell);
-            })?;
+            });
           }
           Event::Exit | Event::ChildExit(_) => {
-            entity.update(cx, |_, cx| {
+            let _ = entity.update(cx, |terminal, cx| {
+              terminal.closed = true;
               cx.emit(TerminalEvent::Closed);
-            })?;
+            });
+            break;
           }
           _ => {}
         }
@@ -254,6 +265,7 @@ impl Terminal {
       title: "Terminal".to_string(),
       user_has_scrolled: false,
       selection: None,
+      closed: false,
     })
   }
 
@@ -362,6 +374,11 @@ impl Terminal {
     &self.title
   }
 
+  /// 子进程是否已退出
+  pub fn is_closed(&self) -> bool {
+    self.closed
+  }
+
   /// 用户是否手动滚动过（即不在自动跟随底部状态）
   pub fn user_has_scrolled(&self) -> bool {
     self.user_has_scrolled
@@ -397,6 +414,7 @@ impl Terminal {
   }
 
   /// 获取当前选择
+  #[allow(dead_code)]
   pub fn selection(&self) -> Option<SelectionRange> {
     self.selection
   }
@@ -505,7 +523,7 @@ impl Terminal {
       if i > 0 {
         text.push('\n');
       }
-      for (_col, c) in cols {
+      for c in cols.values() {
         text.push(*c);
       }
     }
@@ -560,5 +578,3 @@ fn is_word_boundary(c: char) -> bool {
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}
-
-crate::impl_id!(Terminal);
