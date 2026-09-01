@@ -143,6 +143,24 @@ impl TerminalElement {
     matches!(color, AnsiColor::Named(NamedColor::Background))
   }
 
+  fn cell_colors(cell: &alacritty_terminal::term::cell::Cell) -> ([u8; 3], [u8; 3]) {
+    let mut fg = ansi_color_to_rgb(&cell.fg);
+    let mut bg = ansi_color_to_rgb(&cell.bg);
+
+    if cell.flags.contains(Flags::DIM) && !cell.flags.contains(Flags::BOLD) {
+      fg = [fg[0] / 2, fg[1] / 2, fg[2] / 2];
+    }
+    if cell.flags.contains(Flags::INVERSE) {
+      mem::swap(&mut fg, &mut bg);
+    }
+
+    (fg, bg)
+  }
+
+  fn should_paint_cell_background(cell: &alacritty_terminal::term::cell::Cell) -> bool {
+    cell.flags.contains(Flags::INVERSE) || !Self::is_default_bg(&cell.bg)
+  }
+
   /// 绘制单元格背景
   fn paint_cell_background(
     window: &mut Window,
@@ -227,18 +245,7 @@ impl TerminalElement {
         continue;
       }
 
-      let mut fg = ansi_color_to_rgb(&cell.fg);
-      let mut bg = ansi_color_to_rgb(&cell.bg);
-
-      // 处理暗淡（dim）标志
-      if cell.flags.contains(Flags::DIM) && !cell.flags.contains(Flags::BOLD) {
-        fg = [fg[0] / 2, fg[1] / 2, fg[2] / 2];
-      }
-
-      // 处理反色（inverse）标志
-      if cell.flags.contains(Flags::INVERSE) {
-        mem::swap(&mut fg, &mut bg);
-      }
+      let (fg, bg) = Self::cell_colors(cell);
 
       let bold = cell.flags.intersects(Flags::BOLD);
       let c = cell.c;
@@ -377,21 +384,10 @@ impl Element for TerminalElement {
       let col = indexed.point.column.0;
       let cell = &indexed.cell;
 
-      let mut fg = ansi_color_to_rgb(&cell.fg);
-      let mut bg = ansi_color_to_rgb(&cell.bg);
-
-      // 处理暗淡（dim）标志
-      if cell.flags.contains(Flags::DIM) && !cell.flags.contains(Flags::BOLD) {
-        fg = [fg[0] / 2, fg[1] / 2, fg[2] / 2];
-      }
-
-      // 处理反色（inverse）标志
-      if cell.flags.contains(Flags::INVERSE) {
-        bg = fg;
-      }
+      let (_, bg) = Self::cell_colors(cell);
 
       // 默认背景不需要单独绘制（已由整体背景覆盖）
-      if !Self::is_default_bg(&cell.bg) {
+      if Self::should_paint_cell_background(cell) {
         Self::paint_cell_background(window, origin, row, col, bg, char_width, char_height);
       }
     }
@@ -523,16 +519,6 @@ impl Element for TerminalElement {
         }
       }
     });
-
-    // 鼠标释放：完成选择
-    window.on_mouse_event({
-      let _terminal = terminal.clone();
-      move |event: &MouseUpEvent, phase, _window, cx| {
-        if phase.bubble() && event.button == MouseButton::Left {
-          cx.stop_propagation();
-        }
-      }
-    });
   }
 }
 
@@ -608,6 +594,15 @@ mod tests {
     assert!(!TerminalElement::is_default_bg(&AnsiColor::Spec(
       alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 }
     )));
+  }
+
+  #[test]
+  fn inverse_default_background_is_painted() {
+    let inverse = cell_with_flags('x', Flags::INVERSE);
+    assert!(TerminalElement::should_paint_cell_background(&inverse));
+
+    let normal = cell('x');
+    assert!(!TerminalElement::should_paint_cell_background(&normal));
   }
 
   #[test]
