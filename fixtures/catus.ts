@@ -14,7 +14,7 @@ export const ECHO_PTY_SCRIPT = resolve(REPO_ROOT, "scripts", "echo-pty.js");
 export interface CatusHandle {
   process: ChildProcess;
   /** Stop the running Catus process. */
-  kill: () => void;
+  kill: () => Promise<void>;
 }
 
 export interface LaunchCatusOptions {
@@ -51,7 +51,7 @@ export function launchCatus(options: LaunchCatusOptions = {}): CatusHandle {
   const env = { ...process.env };
   if (options.localPtyProgram) {
     env.CATUS_LOCAL_PTY_PROGRAM = options.localPtyProgram;
-    env.CATUS_LOCAL_PTY_ARGS = (options.localPtyArgs ?? []).join(" ");
+    env.CATUS_LOCAL_PTY_ARGS = JSON.stringify(options.localPtyArgs ?? []);
   }
 
   const child = spawn(CATUS_BIN, [], {
@@ -71,22 +71,40 @@ export function launchCatus(options: LaunchCatusOptions = {}): CatusHandle {
     child.stderr?.on("data", write("stderr"));
   }
 
-  const kill = () => {
-    if (child.exitCode === null && !child.killed) {
-      debug("stopping catus (SIGTERM)");
-      // Send SIGTERM first for a graceful shutdown, then escalate if needed.
-      child.kill("SIGTERM");
+  let stopping: Promise<void> | undefined;
+  const kill = (): Promise<void> => {
+    if (stopping) return stopping;
+
+    stopping = new Promise((resolve) => {
+      if (child.exitCode !== null) {
+        resolve();
+        return;
+      }
+
+      let giveUp: ReturnType<typeof setTimeout> | undefined;
       const force = setTimeout(() => {
-        if (child.exitCode === null && !child.killed) {
+        if (child.exitCode === null) {
           debug("catus did not exit, escalating to SIGKILL");
           child.kill("SIGKILL");
+          giveUp = setTimeout(() => {
+            debug("catus did not report exit after SIGKILL");
+            resolve();
+          }, 1000);
         }
       }, 3000);
+
       child.once("exit", (code, signal) => {
         clearTimeout(force);
+        if (giveUp) clearTimeout(giveUp);
         debug(`catus exited (code=${code}, signal=${signal})`);
+        resolve();
       });
-    }
+
+      debug("stopping catus (SIGTERM)");
+      child.kill("SIGTERM");
+    });
+
+    return stopping;
   };
 
   child.once("error", (err) => {

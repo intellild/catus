@@ -777,6 +777,7 @@ dependencies = [
  "gpui-component-assets",
  "portable-pty",
  "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

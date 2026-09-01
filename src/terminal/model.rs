@@ -616,8 +616,9 @@ mod tests {
   use alacritty_terminal::term::TermMode;
   use gpui::{AppContext as _, Bounds, Entity, TestAppContext, point, px, size};
   use std::path::Path;
+  use std::process::Command;
   use std::sync::Arc;
-  use std::time::Duration;
+  use std::time::{Duration, Instant};
 
   /// 用 FakePty 创建一个 Terminal 实体。
   fn make_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
@@ -625,12 +626,22 @@ mod tests {
     cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"))
   }
 
-  fn echo_pty_command() -> PtyCommand {
+  fn echo_pty_command() -> Option<PtyCommand> {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/echo-pty.js");
-    PtyCommand::program(
-      std::env::var("CATUS_NODE").unwrap_or_else(|_| "node".to_string()),
+    let node = std::env::var("CATUS_NODE").unwrap_or_else(|_| "node".to_string());
+    if !Command::new(&node)
+      .arg("--version")
+      .output()
+      .ok()?
+      .status
+      .success()
+    {
+      return None;
+    }
+    Some(PtyCommand::program(
+      node,
       [script.to_string_lossy().into_owned()],
-    )
+    ))
   }
 
   /// 构造一个指定字符的单元格。
@@ -726,16 +737,31 @@ mod tests {
 
   #[gpui::test]
   fn echo_input_appears_in_content(cx: &mut TestAppContext) {
+    let Some(command) = echo_pty_command() else {
+      eprintln!("skipping real PTY echo test because Node.js is unavailable");
+      return;
+    };
     let pty = Arc::new(
-      LocalPty::new_with_command(TerminalSize::default_size(), echo_pty_command())
-        .expect("create echo PTY"),
+      LocalPty::new_with_command(TerminalSize::default_size(), command).expect("create echo PTY"),
     ) as Arc<dyn Pty>;
     let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"));
 
-    // 输入 "hi"，Node echo 脚本应通过真实 PTY 回显。
+    // 先等待 OSC 标题，确认 Node 脚本已启动并进入 raw mode，
+    // 避免输入被 PTY 默认的内核 echo 回显而产生假阳性。
+    let title_deadline = Instant::now() + Duration::from_secs(5);
+    while terminal.read_with(cx, |terminal, _| terminal.title() != "Echo") {
+      assert!(
+        Instant::now() < title_deadline,
+        "echo helper did not initialize"
+      );
+      cx.run_until_parked();
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
     terminal.update(cx, |t, cx| t.input(cx, b"hi".to_vec()));
     let mut row0 = String::new();
-    for _ in 0..20 {
+    let echo_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < echo_deadline {
       cx.run_until_parked();
       terminal.update(cx, |t, cx| t.refresh_content(cx));
       row0 = terminal.read_with(cx, |t, _| {

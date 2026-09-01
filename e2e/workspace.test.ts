@@ -46,9 +46,9 @@ describe("catus workspace UI", () => {
     debug("aiWaitFor ok: catus window visible");
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     debug("=== catus workspace UI: afterAll ===");
-    catus?.kill();
+    await catus?.kill();
   });
 
   it("shows the default Local workspace in the sidebar", async () => {
