@@ -102,17 +102,16 @@ fn default_local_workspace_kind() -> WorkspaceKind {
     return WorkspaceKind::Local;
   }
 
-  let args = std::env::var("CATUS_LOCAL_PTY_ARGS")
-    .ok()
-    .map(|args| {
-      args
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-    })
-    .unwrap_or_default();
+  let args_json = std::env::var("CATUS_LOCAL_PTY_ARGS").ok();
+  let args = parse_local_pty_args(args_json.as_deref());
 
   WorkspaceKind::local_program(program, args)
+}
+
+fn parse_local_pty_args(args_json: Option<&str>) -> Vec<String> {
+  args_json
+    .and_then(|args| serde_json::from_str(args).ok())
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -163,6 +162,23 @@ mod tests {
       workspaces.push(cx.new(|cx| Workspace::new_with_fake_pty(kind, cx)));
     }
     cx.new(|cx| App::with_workspaces(workspaces, cx))
+  }
+
+  #[test]
+  fn local_pty_args_json_preserves_argument_boundaries() {
+    let args = parse_local_pty_args(Some(r#"["/path with spaces/echo.js","--label=two words"]"#));
+    assert_eq!(
+      args,
+      vec![
+        "/path with spaces/echo.js".to_string(),
+        "--label=two words".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn invalid_local_pty_args_json_falls_back_to_no_arguments() {
+    assert!(parse_local_pty_args(Some("not json")).is_empty());
   }
 
   #[gpui::test]
