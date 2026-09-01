@@ -18,7 +18,8 @@ pub struct App {
 impl App {
   /// 创建一个新的 App，包含一个默认的本地 Workspace。
   pub fn new(cx: &mut gpui::Context<Self>) -> Self {
-    let local = cx.new(|cx| Workspace::new(WorkspaceKind::Local, cx));
+    let local_kind = default_local_workspace_kind();
+    let local = cx.new(|cx| Workspace::new(local_kind, cx));
     Self::observe_workspace(&local, cx);
     Self {
       workspaces: vec![local],
@@ -89,6 +90,29 @@ impl App {
     cx.notify();
     true
   }
+}
+
+fn default_local_workspace_kind() -> WorkspaceKind {
+  let Ok(program) = std::env::var("CATUS_LOCAL_PTY_PROGRAM") else {
+    return WorkspaceKind::Local;
+  };
+
+  let program = program.trim().to_string();
+  if program.is_empty() {
+    return WorkspaceKind::Local;
+  }
+
+  let args = std::env::var("CATUS_LOCAL_PTY_ARGS")
+    .ok()
+    .map(|args| {
+      args
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+
+  WorkspaceKind::local_program(program, args)
 }
 
 #[cfg(test)]

@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "@rstest/core";
 import { type ComputerAgent, agentForComputer } from "@midscene/computer";
-import { launchCatus, type CatusHandle } from "../fixtures/catus";
+import {
+  ECHO_PTY_SCRIPT,
+  launchCatus,
+  type CatusHandle,
+} from "../fixtures/catus";
 import { debug, debugEnabled } from "../fixtures/log";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -24,10 +28,13 @@ describe("catus workspace UI", () => {
 
   beforeAll(async () => {
     debug("=== catus workspace UI: beforeAll ===");
-    catus = launchCatus();
+    catus = launchCatus({
+      localPtyProgram: process.execPath,
+      localPtyArgs: [ECHO_PTY_SCRIPT],
+    });
     agent = await agentForComputer({
       aiActionContext:
-        'You are controlling Catus, a macOS terminal client. It has a left sidebar listing workspaces, a title bar with tabs and a "+" button to add a terminal tab, and a terminal area on the right.',
+        'You are controlling Catus, a macOS terminal client. It has a left sidebar listing workspaces, a title bar with tabs and a "+" button to add a terminal tab, and a terminal area on the right. The terminal process is a simple Echo program that displays typed characters.',
     });
 
     // Wait for the Catus window to appear on screen.
@@ -84,6 +91,10 @@ describe("catus workspace UI", () => {
   }, 240_000);
 
   it("adds a new terminal tab when clicking the + button in the title bar", async () => {
+    await agent.aiWaitFor('The only terminal tab title is "Echo"', {
+      timeoutMs: 30_000,
+    });
+
     // Sanity check: start from a single tab.
     const initialCount = await agent.aiQuery<number>(
       "number, how many terminal tabs are shown in the title bar tab strip",
@@ -114,6 +125,9 @@ describe("catus workspace UI", () => {
       },
     );
     debug("aiWaitFor ok: two terminal tabs visible");
+    await agent.aiWaitFor('Both terminal tabs in the title bar are titled "Echo"', {
+      timeoutMs: 30_000,
+    });
 
     const tabCount = await agent.aiQuery<number>(
       "number, how many terminal tabs are shown in the title bar tab strip",
@@ -122,7 +136,7 @@ describe("catus workspace UI", () => {
     expect(tabCount).toBe(2);
 
     // The new tab must carry a proper title. Both tabs run the same local
-    // shell, so their titles should match the initial tab's title.
+    // echo process, so their titles should match the initial tab's title.
     const titles = await agent.aiQuery<string[]>(
       "string[], the title text of every terminal tab in the title bar, in left-to-right order",
     );
@@ -132,9 +146,18 @@ describe("catus workspace UI", () => {
       expect(typeof title).toBe("string");
       expect(title.trim().length).toBeGreaterThan(0);
     }
-    // New tab should share the same shell title as the original tab.
+    // New tab should share the same title as the original tab.
     expect(titles[1]).toBe(initialTitle);
     expect(titles[0]).toBe(initialTitle);
+
+    const marker = `catus-echo-${Date.now()}`;
+    await act(
+      agent,
+      `Click inside the terminal area for the active second tab, then type "${marker}"`,
+    );
+    await agent.aiWaitFor(`The terminal area visibly contains "${marker}"`, {
+      timeoutMs: 30_000,
+    });
   }, 240_000);
 });
 

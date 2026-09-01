@@ -129,8 +129,12 @@ impl Workspace {
     cx: &mut gpui::Context<Self>,
     kind: &WorkspaceKind,
   ) -> Result<Entity<TerminalView>, String> {
-    let pty = LocalPty::new(TerminalSize::default_size(), kind.command())
-      .map_err(|e| format!("Failed to create PTY: {}", e))?;
+    let size = TerminalSize::default_size();
+    let pty = match kind {
+      WorkspaceKind::LocalProgram { .. } => LocalPty::new_with_command(size, kind.pty_command()),
+      _ => LocalPty::new(size, kind.command()),
+    }
+    .map_err(|e| format!("Failed to create PTY: {}", e))?;
     Self::create_terminal_view_with_pty(cx, Arc::new(pty))
   }
 
@@ -226,6 +230,25 @@ impl Workspace {
       id: generate_tab_id(),
       pane_group,
     })
+  }
+
+  /// 测试辅助：使用 FakePty 添加新 tab，避免启动真实 shell。
+  pub(crate) fn add_terminal_tab_with_fake_pty(
+    &mut self,
+    cx: &mut gpui::Context<Self>,
+  ) -> Result<TabId, String> {
+    let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
+    self.add_terminal_tab_with_pty(cx, pty)
+  }
+
+  /// 测试辅助：使用给定的 PTY 添加新 tab。
+  pub(crate) fn add_terminal_tab_with_pty(
+    &mut self,
+    cx: &mut gpui::Context<Self>,
+    pty: Arc<dyn crate::terminal::Pty>,
+  ) -> Result<TabId, String> {
+    let tab = Self::make_tab_with_pty(cx, pty)?;
+    Ok(self.add_tab(tab, cx))
   }
 }
 
@@ -323,11 +346,10 @@ mod tests {
   /// TerminalViewEvent::TitleChanged → Workspace/PaneGroup 订阅 → active_leaf_title。
   #[gpui::test]
   fn tab_title_updates_from_osc_sequence(cx: &mut TestAppContext) {
-    use crate::terminal::fake_pty::EchoMode;
     use gpui::AppContext as _;
 
     // 保留底层 FakePty 引用，以便注入输出
-    let fake = Arc::new(crate::terminal::FakePty::with_echo_mode(EchoMode::None));
+    let fake = Arc::new(crate::terminal::FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
 
@@ -353,10 +375,9 @@ mod tests {
   /// 验证空标题的 OSC 序列不会把 tab 标题覆盖成空字符串。
   #[gpui::test]
   fn tab_title_not_overwritten_by_empty_osc(cx: &mut TestAppContext) {
-    use crate::terminal::fake_pty::EchoMode;
     use gpui::AppContext as _;
 
-    let fake = Arc::new(crate::terminal::FakePty::with_echo_mode(EchoMode::None));
+    let fake = Arc::new(crate::terminal::FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
 
@@ -377,5 +398,86 @@ mod tests {
       pane.read(cx).active_leaf_title(cx)
     });
     assert_eq!(title.as_deref(), Some("Real Title"));
+  }
+
+  /// 验证点击 + 按钮（add_terminal_tab_with_fake_pty）后确实创建了新 tab。
+  #[gpui::test]
+  fn add_terminal_tab_creates_new_tab(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+
+    // 初始状态：1 个 tab
+    let initial_count = ws.read_with(cx, |w, _| w.tabs.len());
+    assert_eq!(initial_count, 1);
+    let initial_active = ws.read_with(cx, |w, _| w.active_tab_id);
+    assert!(initial_active.is_some());
+
+    // 模拟点击 + 按钮
+    let new_tab_id = ws.update(cx, |w, cx| {
+      w.add_terminal_tab_with_fake_pty(cx)
+        .expect("add tab should succeed")
+    });
+
+    // 添加后：2 个 tab
+    let count_after = ws.read_with(cx, |w, _| w.tabs.len());
+    assert_eq!(count_after, 2, "should have 2 tabs after adding one");
+
+    // 新 tab 应该是激活的
+    let active_after = ws.read_with(cx, |w, _| w.active_tab_id);
+    assert_eq!(active_after, Some(new_tab_id), "new tab should be active");
+
+    // 新 tab 应该存在于 tabs 列表中
+    let exists = ws.read_with(cx, |w, _| w.tabs.iter().any(|t| t.id == new_tab_id));
+    assert!(exists, "new tab should exist in tabs list");
+  }
+
+  /// 验证多次添加 tab 的行为。
+  #[gpui::test]
+  fn add_multiple_terminal_tabs(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+
+    // 初始状态：1 个 tab
+    assert_eq!(ws.read_with(cx, |w, _| w.tabs.len()), 1);
+
+    // 添加 3 个新 tab
+    let id1 = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
+    let id2 = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
+    let id3 = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
+
+    // 应该有 4 个 tab
+    assert_eq!(ws.read_with(cx, |w, _| w.tabs.len()), 4);
+
+    // 最后添加的 tab 应该是激活的
+    assert_eq!(ws.read_with(cx, |w, _| w.active_tab_id), Some(id3));
+
+    // 所有 tab id 都应该不同
+    ws.read_with(cx, |w, _| {
+      let ids: Vec<_> = w.tabs.iter().map(|t| t.id).collect();
+      assert!(ids.contains(&id1));
+      assert!(ids.contains(&id2));
+      assert!(ids.contains(&id3));
+    });
+  }
+
+  /// 验证添加新 tab 后，每个 tab 都有独立的 pane_group（终端实例）。
+  #[gpui::test]
+  fn added_tabs_have_independent_pane_groups(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceKind::Local);
+
+    let first_pane = ws.read_with(cx, |w, _| w.tabs[0].pane_group.clone());
+
+    let new_tab_id = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
+
+    ws.read_with(cx, |w, _| {
+      let new_tab = w
+        .tabs
+        .iter()
+        .find(|t| t.id == new_tab_id)
+        .expect("new tab exists");
+      // 两个 tab 的 pane_group 应该是不同的实体
+      assert!(
+        first_pane != new_tab.pane_group,
+        "each tab should have its own pane group"
+      );
+    });
   }
 }

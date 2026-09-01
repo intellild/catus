@@ -14,6 +14,43 @@ enum WriteCommand {
   Resize(PtySize),
 }
 
+/// Command launched inside a local PTY.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PtyCommand {
+  /// Launch the user's default shell.
+  DefaultShell,
+  /// Launch a concrete program with explicit arguments.
+  Program { program: String, args: Vec<String> },
+}
+
+impl PtyCommand {
+  pub fn program(
+    program: impl Into<String>,
+    args: impl IntoIterator<Item = impl Into<String>>,
+  ) -> Self {
+    Self::Program {
+      program: program.into(),
+      args: args.into_iter().map(Into::into).collect(),
+    }
+  }
+
+  pub fn from_command_line(command: Option<&str>) -> Self {
+    if let Some(cmd_str) = command {
+      let trimmed = cmd_str.trim();
+      if !trimmed.is_empty() {
+        let mut parts = trimmed.split_whitespace();
+        let program = parts.next().expect("non-empty after trim").to_string();
+        return Self::Program {
+          program,
+          args: parts.map(ToString::to_string).collect(),
+        };
+      }
+    }
+
+    Self::DefaultShell
+  }
+}
+
 /// 本地 PTY 实现
 ///
 /// 使用独立 reader/writer 线程处理阻塞 I/O，通过 `async_channel` 与
@@ -32,6 +69,11 @@ impl LocalPty {
   /// * `command` - 可选的命令字符串。`None` 启动系统默认 shell；
   ///   `Some("ssh user@host")` 等会被按空白拆分为程序 + 参数。
   pub fn new(size: TerminalSize, command: Option<&str>) -> Result<Self> {
+    Self::new_with_command(size, PtyCommand::from_command_line(command))
+  }
+
+  /// 使用显式命令创建本地 PTY。
+  pub fn new_with_command(size: TerminalSize, command: PtyCommand) -> Result<Self> {
     let pty_system = portable_pty::native_pty_system();
 
     let pty_size = PtySize {
@@ -46,7 +88,7 @@ impl LocalPty {
       .with_context(|| "Failed to open PTY")?;
 
     // 构造要执行的命令
-    let cmd = build_command(command);
+    let cmd = build_command(&command);
     debug!(target: "catus", "spawning PTY command: {:?}", cmd.get_argv());
 
     let child = pty_pair
@@ -84,34 +126,32 @@ impl LocalPty {
   }
 }
 
-/// 将命令字符串按空白拆分为程序名 + 参数。
+/// 构造 portable-pty 命令。
 ///
 /// `portable_pty::CommandBuilder::new` 只接受单个程序路径，不接受
 /// shell 命令行，因此 `"ssh user@host"` 必须拆分为 `ssh` + `user@host`。
-fn build_command(command: Option<&str>) -> CommandBuilder {
-  if let Some(cmd_str) = command {
-    let trimmed = cmd_str.trim();
-    if !trimmed.is_empty() {
-      let mut parts = trimmed.split_whitespace();
-      let program = parts.next().expect("non-empty after trim");
+fn build_command(command: &PtyCommand) -> CommandBuilder {
+  match command {
+    PtyCommand::Program { program, args } => {
       let mut cmd = CommandBuilder::new(program);
-      for arg in parts {
+      for arg in args {
         cmd.arg(arg);
       }
-      return cmd;
+      cmd
     }
-  }
-
-  // 系统默认 shell
-  #[cfg(target_os = "windows")]
-  {
-    CommandBuilder::new("cmd.exe")
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    std::env::var("SHELL")
-      .map(|shell| CommandBuilder::new(&shell))
-      .unwrap_or_else(|_| CommandBuilder::new("/bin/sh"))
+    PtyCommand::DefaultShell => {
+      // 系统默认 shell
+      #[cfg(target_os = "windows")]
+      {
+        CommandBuilder::new("cmd.exe")
+      }
+      #[cfg(not(target_os = "windows"))]
+      {
+        std::env::var("SHELL")
+          .map(|shell| CommandBuilder::new(&shell))
+          .unwrap_or_else(|_| CommandBuilder::new("/bin/sh"))
+      }
+    }
   }
 }
 
@@ -204,7 +244,7 @@ mod tests {
 
   #[test]
   fn build_command_none_uses_default_shell() {
-    let cmd = build_command(None);
+    let cmd = build_command(&PtyCommand::from_command_line(None));
     // 非默认程序：argv 第一个元素为 shell 路径
     let argv = argv_strings(&cmd);
     assert!(!argv.is_empty(), "default shell should have a program");
@@ -216,22 +256,24 @@ mod tests {
 
   #[test]
   fn build_command_empty_string_falls_back_to_default_shell() {
-    let cmd = build_command(Some(""));
-    let cmd2 = build_command(Some("   "));
+    let cmd = build_command(&PtyCommand::from_command_line(Some("")));
+    let cmd2 = build_command(&PtyCommand::from_command_line(Some("   ")));
     assert!(!argv_strings(&cmd).is_empty());
     assert!(!argv_strings(&cmd2).is_empty());
   }
 
   #[test]
   fn build_command_single_program_no_args() {
-    let cmd = build_command(Some("ssh"));
+    let cmd = build_command(&PtyCommand::from_command_line(Some("ssh")));
     let argv = argv_strings(&cmd);
     assert_eq!(argv, vec!["ssh".to_string()]);
   }
 
   #[test]
   fn build_command_splits_on_whitespace() {
-    let cmd = build_command(Some("ssh user@host -p 2222"));
+    let cmd = build_command(&PtyCommand::from_command_line(Some(
+      "ssh user@host -p 2222",
+    )));
     let argv = argv_strings(&cmd);
     assert_eq!(
       argv,
@@ -246,8 +288,18 @@ mod tests {
 
   #[test]
   fn build_command_trims_surrounding_whitespace() {
-    let cmd = build_command(Some("  ssh user@host  "));
+    let cmd = build_command(&PtyCommand::from_command_line(Some("  ssh user@host  ")));
     let argv = argv_strings(&cmd);
     assert_eq!(argv, vec!["ssh".to_string(), "user@host".to_string()]);
+  }
+
+  #[test]
+  fn explicit_program_preserves_arguments() {
+    let cmd = build_command(&PtyCommand::program("node", ["scripts/echo-pty.js"]));
+    let argv = argv_strings(&cmd);
+    assert_eq!(
+      argv,
+      vec!["node".to_string(), "scripts/echo-pty.js".to_string()]
+    );
   }
 }

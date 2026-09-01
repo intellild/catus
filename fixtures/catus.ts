@@ -9,11 +9,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Repo root is one level up from fixtures/.
 const REPO_ROOT = resolve(__dirname, "..");
 const CATUS_BIN = resolve(REPO_ROOT, "target", "debug", "catus");
+export const ECHO_PTY_SCRIPT = resolve(REPO_ROOT, "scripts", "echo-pty.js");
 
 export interface CatusHandle {
   process: ChildProcess;
   /** Stop the running Catus process. */
   kill: () => void;
+}
+
+export interface LaunchCatusOptions {
+  localPtyProgram?: string;
+  localPtyArgs?: string[];
 }
 
 /**
@@ -25,7 +31,7 @@ export interface CatusHandle {
  * When `CATUS_LOG_DIR` is set, the child process stdout/stderr are
  * captured into the e2e log (in addition to orchestration events).
  */
-export function launchCatus(): CatusHandle {
+export function launchCatus(options: LaunchCatusOptions = {}): CatusHandle {
   if (!existsSync(CATUS_BIN)) {
     throw new Error(
       `Catus binary not found at ${CATUS_BIN}. Run \`cargo build\` first.`,
@@ -42,8 +48,15 @@ export function launchCatus(): CatusHandle {
     ? ["ignore", "pipe", "pipe"]
     : "ignore";
 
+  const env = { ...process.env };
+  if (options.localPtyProgram) {
+    env.CATUS_LOCAL_PTY_PROGRAM = options.localPtyProgram;
+    env.CATUS_LOCAL_PTY_ARGS = (options.localPtyArgs ?? []).join(" ");
+  }
+
   const child = spawn(CATUS_BIN, [], {
     cwd: REPO_ROOT,
+    env,
     stdio,
     detached: false,
   });
