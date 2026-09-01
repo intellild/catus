@@ -1,8 +1,7 @@
-//! 只支持 echo 的假 PTY，用于测试。
+//! 测试用假 PTY。
 //!
-//! `FakePty` 不启动任何子进程，只把写入的数据原样回送到读取通道，
-//! 模拟处于 echo 模式的终端。此外提供 `push_output` / `push_bytes` 等
-//! 测试辅助方法，用于在不依赖真实进程的情况下向终端注入数据
+//! `FakePty` 不启动任何子进程，写入的数据只会被记录，不会自动回显。
+//! 测试可通过 `push_output` / `push_bytes` 等辅助方法向终端注入数据
 //! （例如模拟程序输出、OSC 标题序列、子进程退出等）。
 //!
 //! 所有写入和 resize 调用都会被记录，便于在测试中验证终端发出的数据。
@@ -13,15 +12,6 @@ use anyhow::Result;
 use async_channel::{Receiver, Sender, unbounded};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
-
-/// 控制写入到 `FakePty` 的数据如何回显。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EchoMode {
-  /// 不回显任何内容。测试需要完全控制输出时使用。
-  None,
-  /// 原样回显写入的字节。
-  Echo,
-}
 
 /// 记录一次 resize 调用。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,50 +33,38 @@ impl From<TerminalSize> for RecordedResize {
   }
 }
 
-/// 假 PTY，仅支持 echo。
+/// 假 PTY。
 ///
 /// 设计要点：
-/// - `write` 会把数据追加到 `writes` 记录，并按 `echo_mode` 决定是否回显。
+/// - `write` 会把数据追加到 `writes` 记录，但不产生输出。
 /// - `resize` 会更新 `last_size`，并追加到 `resizes` 记录。
-/// - `reader` 返回的通道接收回显数据以及 `push_output` 注入的数据。
+/// - `reader` 返回的通道只接收 `push_output` 注入的数据。
 /// - 通过 `Arc<Mutex<...>>` 持有可变状态以满足 `&self` 的 trait 约定。
 pub struct FakePty {
   reader_tx: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
   reader_rx: Receiver<Vec<u8>>,
-  echo_mode: Arc<Mutex<EchoMode>>,
   writes: Arc<Mutex<Vec<Vec<u8>>>>,
   resizes: Arc<Mutex<Vec<RecordedResize>>>,
   last_size: Arc<Mutex<Option<TerminalSize>>>,
 }
 
 impl FakePty {
-  /// 创建一个新的 `FakePty`，默认 `EchoMode::Echo`。
+  /// 创建一个新的 `FakePty`。
   pub fn new() -> Self {
-    Self::with_echo_mode(EchoMode::Echo)
-  }
-
-  /// 用指定的 echo 模式创建 `FakePty`。
-  pub fn with_echo_mode(mode: EchoMode) -> Self {
     let (reader_tx, reader_rx) = unbounded::<Vec<u8>>();
     Self {
       reader_tx: Arc::new(Mutex::new(Some(reader_tx))),
       reader_rx,
-      echo_mode: Arc::new(Mutex::new(mode)),
       writes: Arc::new(Mutex::new(Vec::new())),
       resizes: Arc::new(Mutex::new(Vec::new())),
       last_size: Arc::new(Mutex::new(None)),
     }
   }
 
-  /// 设置 echo 模式。可在测试运行中动态切换。
-  pub fn set_echo_mode(&self, mode: EchoMode) {
-    *self.echo_mode.lock().unwrap() = mode;
-  }
-
   /// 直接向读取通道注入数据，模拟子进程输出。
   ///
-  /// 与 `write` 不同，`push_output` 不会记录到 `writes`，也不会受
-  /// `echo_mode` 影响。用于在测试中模拟程序主动打印的内容。
+  /// 与 `write` 不同，`push_output` 不会记录到 `writes`。用于在测试中
+  /// 模拟程序主动打印的内容。
   pub fn push_output(&self, data: impl Into<Vec<u8>>) -> Result<()> {
     let tx = self.reader_tx.lock().unwrap();
     if let Some(tx) = tx.as_ref() {
@@ -149,15 +127,6 @@ impl Default for FakePty {
 impl Pty for FakePty {
   async fn write(&self, data: Vec<u8>) -> Result<()> {
     self.writes.lock().unwrap().push(data.clone());
-
-    let mode = *self.echo_mode.lock().unwrap();
-    if mode == EchoMode::Echo {
-      // 先克隆出 sender 再 await，避免跨 await 持有 MutexGuard（要求 Send）
-      let tx = self.reader_tx.lock().unwrap().clone();
-      if let Some(tx) = tx {
-        tx.send(data).await?;
-      }
-    }
     Ok(())
   }
 
@@ -177,22 +146,12 @@ mod tests {
   use super::*;
 
   #[gpui::test]
-  async fn write_echoes_in_echo_mode() {
+  async fn write_records_without_echoing() {
     let pty = FakePty::new();
     pty.write(b"hello".to_vec()).await.unwrap();
 
-    let rx = pty.reader();
-    let data = rx.recv().await.unwrap();
-    assert_eq!(data, b"hello".to_vec());
-    assert_eq!(pty.writes_string(), "hello");
-  }
-
-  #[gpui::test]
-  async fn write_does_not_echo_in_none_mode() {
-    let pty = FakePty::with_echo_mode(EchoMode::None);
-    pty.write(b"silent".to_vec()).await.unwrap();
     assert_eq!(pty.pending_output_count(), 0);
-    assert_eq!(pty.writes_string(), "silent");
+    assert_eq!(pty.writes_string(), "hello");
   }
 
   #[gpui::test]
@@ -217,18 +176,6 @@ mod tests {
     let resizes = pty.resizes();
     assert_eq!(resizes.len(), 1);
     assert_eq!(resizes[0], RecordedResize::from(size));
-  }
-
-  #[gpui::test]
-  async fn switching_echo_mode_at_runtime() {
-    let pty = FakePty::new();
-    pty.write(b"a".to_vec()).await.unwrap(); // echoed
-    assert_eq!(pty.pending_output_count(), 1);
-
-    pty.set_echo_mode(EchoMode::None);
-    pty.write(b"b".to_vec()).await.unwrap(); // not echoed
-    assert_eq!(pty.pending_output_count(), 1); // still 1
-    assert_eq!(pty.writes_string(), "ab");
   }
 
   #[test]
@@ -258,15 +205,15 @@ mod tests {
   async fn close_reader_makes_write_no_longer_echo() {
     let pty = FakePty::new();
     pty.write(b"before".to_vec()).await.unwrap();
-    assert_eq!(pty.pending_output_count(), 1);
+    assert_eq!(pty.pending_output_count(), 0);
 
     pty.close_reader();
-    // 关闭后 write 仍记录，但不再回显
+    // 关闭后 write 仍记录。
     pty.write(b"after".to_vec()).await.unwrap();
-    assert_eq!(pty.pending_output_count(), 1); // 仍是 1
+    assert_eq!(pty.pending_output_count(), 0);
     assert_eq!(pty.writes_string(), "beforeafter");
     // push_output 关闭后变为空操作
     assert!(pty.push_bytes("ignored").is_ok());
-    assert_eq!(pty.pending_output_count(), 1);
+    assert_eq!(pty.pending_output_count(), 0);
   }
 }

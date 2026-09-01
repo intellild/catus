@@ -1,22 +1,36 @@
 use gpui::SharedString;
 use gpui_component::IconName;
 
+use crate::terminal::PtyCommand;
+
 /// A workspace 的类型，决定它启动什么样的终端命令。
 ///
 /// - `Local`：使用系统默认 shell（不传命令给 PTY）。
+/// - `LocalProgram`：以本地自定义程序作为 Local workspace 的终端进程。
 /// - `Ssh`：以用户提供的命令（通常形如 `ssh user@host`）启动本地 ssh 进程，
 ///   复用 `LocalPty`，不引入额外依赖。
 #[derive(Clone, Debug)]
 pub enum WorkspaceKind {
   Local,
+  LocalProgram { program: String, args: Vec<String> },
   Ssh(String),
 }
 
 impl WorkspaceKind {
+  pub fn local_program(
+    program: impl Into<String>,
+    args: impl IntoIterator<Item = impl Into<String>>,
+  ) -> Self {
+    Self::LocalProgram {
+      program: program.into(),
+      args: args.into_iter().map(Into::into).collect(),
+    }
+  }
+
   /// 侧边栏展示用的图标。
   pub fn icon(&self) -> IconName {
     match self {
-      WorkspaceKind::Local => IconName::SquareTerminal,
+      WorkspaceKind::Local | WorkspaceKind::LocalProgram { .. } => IconName::SquareTerminal,
       WorkspaceKind::Ssh(_) => IconName::Globe,
     }
   }
@@ -25,14 +39,26 @@ impl WorkspaceKind {
   pub fn command(&self) -> Option<&str> {
     match self {
       WorkspaceKind::Local => None,
+      WorkspaceKind::LocalProgram { .. } => None,
       WorkspaceKind::Ssh(cmd) => Some(cmd.as_str()),
+    }
+  }
+
+  /// 传给 `LocalPty` 的启动命令。
+  pub fn pty_command(&self) -> PtyCommand {
+    match self {
+      WorkspaceKind::Local => PtyCommand::DefaultShell,
+      WorkspaceKind::LocalProgram { program, args } => {
+        PtyCommand::program(program.clone(), args.clone())
+      }
+      WorkspaceKind::Ssh(cmd) => PtyCommand::from_command_line(Some(cmd.as_str())),
     }
   }
 
   /// 侧边栏展示用的名称。
   pub fn display_name(&self) -> SharedString {
     match self {
-      WorkspaceKind::Local => "Local".into(),
+      WorkspaceKind::Local | WorkspaceKind::LocalProgram { .. } => "Local".into(),
       WorkspaceKind::Ssh(cmd) => {
         // 去掉首尾空白后展示命令本身（例如 "ssh user@host"），
         // 若用户只填了 "ssh" 则退化为 "SSH"。
@@ -63,9 +89,27 @@ mod tests {
   }
 
   #[test]
+  fn local_program_builds_explicit_pty_command() {
+    let kind = WorkspaceKind::local_program("node", ["scripts/echo-pty.js"]);
+    assert_eq!(
+      kind.pty_command(),
+      PtyCommand::program("node", ["scripts/echo-pty.js"])
+    );
+    assert_eq!(kind.command(), None);
+  }
+
+  #[test]
   fn local_icon_is_square_terminal() {
     assert!(matches!(
       WorkspaceKind::Local.icon(),
+      IconName::SquareTerminal
+    ));
+  }
+
+  #[test]
+  fn local_program_icon_is_square_terminal() {
+    assert!(matches!(
+      WorkspaceKind::local_program("node", ["script.js"]).icon(),
       IconName::SquareTerminal
     ));
   }
@@ -79,6 +123,16 @@ mod tests {
   #[test]
   fn local_display_name_is_local() {
     assert_eq!(WorkspaceKind::Local.display_name().as_ref(), "Local");
+  }
+
+  #[test]
+  fn local_program_display_name_is_local() {
+    assert_eq!(
+      WorkspaceKind::local_program("node", ["script.js"])
+        .display_name()
+        .as_ref(),
+      "Local"
+    );
   }
 
   #[test]

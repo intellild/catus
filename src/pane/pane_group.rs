@@ -407,10 +407,8 @@ mod tests {
 
   #[gpui::test]
   fn active_leaf_title_returns_terminal_title(cx: &mut TestAppContext) {
-    use crate::terminal::fake_pty::EchoMode;
-
     // 重新构造以便注入 OSC 标题
-    let fake = Arc::new(FakePty::with_echo_mode(EchoMode::None));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
     let group = ws.read_with(cx, |w, _| w.active_tab().expect("tab").pane_group.clone());

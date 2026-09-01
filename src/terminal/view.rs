@@ -798,7 +798,7 @@ mod tests {
   use super::{CopySelection, PasteFromClipboard, TerminalView};
   use crate::terminal::Terminal;
   use crate::terminal::content::TerminalPoint;
-  use crate::terminal::fake_pty::{EchoMode, FakePty};
+  use crate::terminal::fake_pty::FakePty;
   use alacritty_terminal::index::{Column, Line};
   use gpui::{AppContext as _, ClipboardItem, TestAppContext, VisualTestContext};
   use std::sync::Arc;
@@ -806,7 +806,7 @@ mod tests {
   /// 构造一个带选中文本的 TerminalView（用于 copy 测试）。
   /// 通过 FakePty 注入 "hi" 输出并 refresh_content 填充 content，再用公开方法设置选区。
   fn view_with_selection(cx: &mut TestAppContext) -> gpui::Entity<TerminalView> {
-    let fake = Arc::new(FakePty::with_echo_mode(EchoMode::None));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("terminal"));
     // 注入输出 "hi" 并提取到 content
@@ -835,7 +835,7 @@ mod tests {
 
   /// 构造一个保留 FakePty 引用的 TerminalView（用于 paste 测试）。
   fn view_with_fake_pty(cx: &mut TestAppContext) -> (gpui::Entity<TerminalView>, Arc<FakePty>) {
-    let fake = Arc::new(FakePty::with_echo_mode(EchoMode::None));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("terminal"));
     let view = cx.new(|cx| TerminalView::new(terminal, cx));

@@ -589,14 +589,25 @@ mod tests {
   use super::{Pty, Terminal, is_word_boundary};
   use crate::terminal::content::{IndexedCell, TerminalPoint};
   use crate::terminal::fake_pty::FakePty;
+  use crate::terminal::{LocalPty, PtyCommand, TerminalSize};
   use alacritty_terminal::term::TermMode;
   use gpui::{AppContext as _, Bounds, Entity, TestAppContext, point, px, size};
+  use std::path::Path;
   use std::sync::Arc;
+  use std::time::Duration;
 
   /// 用 FakePty 创建一个 Terminal 实体。
   fn make_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
     let pty = Arc::new(FakePty::new()) as Arc<dyn Pty>;
     cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"))
+  }
+
+  fn echo_pty_command() -> PtyCommand {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/echo-pty.js");
+    PtyCommand::program(
+      std::env::var("CATUS_NODE").unwrap_or_else(|_| "node".to_string()),
+      [script.to_string_lossy().into_owned()],
+    )
   }
 
   /// 构造一个指定字符的单元格。
@@ -669,19 +680,31 @@ mod tests {
 
   #[gpui::test]
   fn echo_input_appears_in_content(cx: &mut TestAppContext) {
-    let terminal = make_terminal(cx);
-    // 输入 "hi"，FakePty 会原样回显
-    terminal.update(cx, |t, cx| t.input(cx, b"hi".to_vec()));
-    cx.run_until_parked();
-    // 提取渲染内容
-    terminal.update(cx, |t, cx| t.refresh_content(cx));
+    let pty = Arc::new(
+      LocalPty::new_with_command(TerminalSize::default_size(), echo_pty_command())
+        .expect("create echo PTY"),
+    ) as Arc<dyn Pty>;
+    let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"));
 
-    let cells = terminal.read_with(cx, |t, _| t.content().cells.clone());
-    let row0: String = cells
-      .iter()
-      .filter(|c| c.point.line.0 == 0)
-      .map(|c| c.cell.c)
-      .collect();
+    // 输入 "hi"，Node echo 脚本应通过真实 PTY 回显。
+    terminal.update(cx, |t, cx| t.input(cx, b"hi".to_vec()));
+    let mut row0 = String::new();
+    for _ in 0..20 {
+      cx.run_until_parked();
+      terminal.update(cx, |t, cx| t.refresh_content(cx));
+      row0 = terminal.read_with(cx, |t, _| {
+        t.content()
+          .cells
+          .iter()
+          .filter(|c| c.point.line.0 == 0)
+          .map(|c| c.cell.c)
+          .collect()
+      });
+      if row0.starts_with("hi") {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(
       row0.starts_with("hi"),
       "row should start with 'hi', got: {:?}",
@@ -692,9 +715,7 @@ mod tests {
   #[gpui::test]
   fn title_updates_from_osc_sequence(cx: &mut TestAppContext) {
     // 保留底层 FakePty 引用，以便在 Terminal 构造后向其 reader 注入输出。
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
@@ -708,9 +729,7 @@ mod tests {
 
   #[gpui::test]
   fn empty_title_osc_does_not_overwrite(cx: &mut TestAppContext) {
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
@@ -845,9 +864,7 @@ mod tests {
 
   #[gpui::test]
   fn paste_wraps_with_brackets_when_mode_enabled(cx: &mut TestAppContext) {
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
@@ -874,9 +891,7 @@ mod tests {
 
   #[gpui::test]
   fn paste_without_brackets_when_mode_disabled(cx: &mut TestAppContext) {
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
@@ -891,9 +906,7 @@ mod tests {
 
   #[gpui::test]
   fn sync_size_resizes_alacritty_and_pty(cx: &mut TestAppContext) {
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
@@ -919,9 +932,7 @@ mod tests {
 
   #[gpui::test]
   fn sync_size_skips_when_unchanged(cx: &mut TestAppContext) {
-    let fake = Arc::new(FakePty::with_echo_mode(
-      crate::terminal::fake_pty::EchoMode::None,
-    ));
+    let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
