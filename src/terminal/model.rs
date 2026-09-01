@@ -310,9 +310,12 @@ impl Terminal {
   pub fn paste(&mut self, cx: &mut Context<Self>, text: String) {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let data = if self.content.mode.contains(TermMode::BRACKETED_PASTE) {
-      let mut data = Vec::with_capacity(normalized.len() + 12);
+      // ESC 可以在剪贴正文中构造 ESC[201~ 提前结束 bracketed paste，
+      // 使后续字节被 shell 当作普通按键执行。保留可见文本，但移除 ESC。
+      let sanitized = normalized.replace('\x1b', "");
+      let mut data = Vec::with_capacity(sanitized.len() + 12);
       data.extend_from_slice(b"\x1b[200~");
-      data.extend_from_slice(normalized.as_bytes());
+      data.extend_from_slice(sanitized.as_bytes());
       data.extend_from_slice(b"\x1b[201~");
       data
     } else {
@@ -930,6 +933,26 @@ mod tests {
       "expected bracketed paste, got: {:?}",
       written
     );
+  }
+
+  #[gpui::test]
+  fn bracketed_paste_removes_embedded_escape_sequences(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let pty = fake.clone() as Arc<dyn Pty>;
+    let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"));
+
+    fake.push_bytes("\x1b[?2004h").unwrap();
+    cx.run_until_parked();
+    terminal.update(cx, |terminal, cx| terminal.refresh_content(cx));
+
+    terminal.update(cx, |terminal, cx| {
+      terminal.paste(cx, "safe\x1b[201~printf injected\r".to_string())
+    });
+    cx.run_until_parked();
+
+    let written = fake.writes_string();
+    assert_eq!(written.matches("\x1b[201~").count(), 1);
+    assert_eq!(written, "\x1b[200~safe[201~printf injected\n\x1b[201~");
   }
 
   #[gpui::test]
