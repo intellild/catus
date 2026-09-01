@@ -22,6 +22,8 @@ pub enum TerminalViewEvent {
   TitleChanged,
   /// 子进程退出。
   Closed,
+  /// 终端获得焦点。
+  Focused,
 }
 
 /// Terminal view component using GPUI
@@ -158,6 +160,11 @@ impl TerminalView {
   pub fn title(&self, cx: &App) -> String {
     self.terminal.read(cx).title().to_string()
   }
+
+  /// 将键盘焦点移到该终端。
+  pub fn focus(&self, window: &mut Window) {
+    self.focus_handle.focus(window);
+  }
 }
 
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -193,6 +200,12 @@ impl Render for TerminalView {
       .child(TerminalElement::new(
         terminal.clone(),
         self.focus_handle.clone(),
+        {
+          let view = cx.entity().downgrade();
+          move |cx| {
+            let _ = view.update(cx, |_, cx| cx.emit(TerminalViewEvent::Focused));
+          }
+        },
       ))
       .on_action(cx.listener(Self::on_action_tab))
       .on_action(cx.listener(Self::on_action_tab_prev))

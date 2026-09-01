@@ -5,6 +5,7 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::*;
 use gpui_component::ActiveTheme;
 use std::mem;
+use std::rc::Rc;
 
 /// 终端元素布局状态
 pub struct LayoutState {
@@ -70,11 +71,16 @@ pub struct TerminalElement {
   char_width: Pixels,
   char_height: Pixels,
   focus_handle: FocusHandle,
+  on_focus: Rc<dyn Fn(&mut App)>,
 }
 
 impl TerminalElement {
   /// 创建新的 TerminalElement
-  pub fn new(terminal: Entity<Terminal>, focus_handle: FocusHandle) -> Self {
+  pub fn new(
+    terminal: Entity<Terminal>,
+    focus_handle: FocusHandle,
+    on_focus: impl Fn(&mut App) + 'static,
+  ) -> Self {
     // 初始化时使用空内容，prepaint 时会从 Terminal 读取
     let initial_content = TerminalContent::new();
 
@@ -84,6 +90,7 @@ impl TerminalElement {
       char_width: px(8.),
       char_height: px(16.),
       focus_handle,
+      on_focus: Rc::new(on_focus),
     }
   }
 
@@ -474,11 +481,13 @@ impl Element for TerminalElement {
 
     // 鼠标按下：开始选择
     let focus_handle = self.focus_handle.clone();
+    let on_focus = self.on_focus.clone();
     window.on_mouse_event({
       let terminal = terminal.clone();
       move |event: &MouseDownEvent, phase, window, cx| {
         if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) {
           window.focus(&focus_handle);
+          on_focus(cx);
           let point =
             terminal
               .read(cx)

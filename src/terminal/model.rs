@@ -159,12 +159,14 @@ struct ExtractedTerminalData {
 pub struct Terminal {
   content: TerminalContent,
   term: Arc<Mutex<Term>>,
-  pty: Arc<dyn Pty>,
+  pty: Option<Arc<dyn Pty>>,
   terminal_size: Option<TerminalSize>,
   title: String,
   user_has_scrolled: bool,
   selection: Option<SelectionRange>,
   closed: bool,
+  _reader_task: Task<()>,
+  _event_task: Task<()>,
 }
 
 impl Terminal {
@@ -186,32 +188,32 @@ impl Terminal {
       EventProxy(events_tx),
     )));
 
-    let entity = cx.entity().clone();
     let pty_reader = pty.reader();
 
     // PTY 读取任务：「生产」侧
     // 从 PTY 获取原始数据 → VTE 解析写入 alacritty Term → notify UI 线程
     // 这里不提取渲染数据，提取放在 prepaint 阶段按需执行
     let event_term = term.clone();
-    cx.spawn(async move |_, cx| -> Result<()> {
+    let reader_task = cx.spawn(async move |entity, cx| {
       let term = event_term;
-      loop {
-        let data = pty_reader.recv().await?;
+      while let Ok(data) = pty_reader.recv().await {
         let term = term.clone();
         cx.background_spawn(async move {
           term.lock().await.advance(&data);
         })
         .await;
 
-        entity.update(cx, |_, cx| cx.notify())?;
+        if entity.update(cx, |_, cx| cx.notify()).is_err() {
+          return;
+        }
       }
-    })
-    .detach();
+
+      let _ = entity.update(cx, |terminal, cx| terminal.mark_closed(cx));
+    });
 
     // alacritty 事件处理
     // 处理 PTY 回写（光标位置响应等）、标题变更、响铃、退出等异步事件
-    let pty_clone = pty.clone();
-    cx.spawn(async move |entity, cx| {
+    let event_task = cx.spawn(async move |entity, cx| {
       use alacritty_terminal::event::Event;
       loop {
         let event = match events_rx.recv().await {
@@ -237,7 +239,13 @@ impl Terminal {
             }
           }
           Event::PtyWrite(data) => {
-            let _ = pty_clone.write(data.into_bytes()).await;
+            let pty = entity
+              .read_with(cx, |terminal, _| terminal.pty.clone())
+              .ok()
+              .flatten();
+            if let Some(pty) = pty {
+              let _ = pty.write(data.into_bytes()).await;
+            }
           }
           Event::Wakeup => {
             let _ = entity.update(cx, |_, cx| cx.notify());
@@ -248,30 +256,39 @@ impl Terminal {
             });
           }
           Event::Exit | Event::ChildExit(_) => {
-            let _ = entity.update(cx, |terminal, cx| {
-              terminal.closed = true;
-              cx.emit(TerminalEvent::Closed);
-            });
+            let _ = entity.update(cx, |terminal, cx| terminal.mark_closed(cx));
             break;
           }
           _ => {}
         }
       }
-    })
-    .detach();
+    });
 
     let content = TerminalContent::new();
 
     Ok(Self {
       content,
       term,
-      pty,
+      pty: Some(pty),
       terminal_size: None,
       title: "Terminal".to_string(),
       user_has_scrolled: false,
       selection: None,
       closed: false,
+      _reader_task: reader_task,
+      _event_task: event_task,
     })
+  }
+
+  fn mark_closed(&mut self, cx: &mut Context<Self>) {
+    if self.closed {
+      return;
+    }
+
+    self.closed = true;
+    self.pty.take();
+    cx.emit(TerminalEvent::Closed);
+    cx.notify();
   }
 
   /// 发送输入数据到终端
@@ -283,7 +300,9 @@ impl Terminal {
     self.scroll_to_bottom(false, cx);
     self.clear_selection(cx);
 
-    let pty = self.pty.clone();
+    let Some(pty) = self.pty.clone() else {
+      return;
+    };
     cx.spawn(async move |_, _| pty.write(data).await).detach();
   }
 
@@ -333,11 +352,12 @@ impl Terminal {
       .block(self.term.lock())
       .resize(&dimensions);
 
-    let pty = self.pty.clone();
-    cx.spawn(async move |_, _| {
-      let _ = pty.resize(new_size).await;
-    })
-    .detach();
+    if let Some(pty) = self.pty.clone() {
+      cx.spawn(async move |_, _| {
+        let _ = pty.resize(new_size).await;
+      })
+      .detach();
+    }
   }
 
   /// 滚动终端
@@ -642,6 +662,29 @@ mod tests {
     assert!(!is_word_boundary('a'));
     assert!(!is_word_boundary('Z'));
     assert!(!is_word_boundary('0'));
+  }
+
+  #[gpui::test]
+  fn reader_eof_marks_terminal_closed(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let pty = fake.clone() as Arc<dyn Pty>;
+    let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"));
+
+    fake.close_reader();
+    cx.run_until_parked();
+
+    assert!(terminal.read_with(cx, |terminal, _| terminal.is_closed()));
+  }
+
+  #[gpui::test]
+  fn reader_task_does_not_keep_terminal_alive(cx: &mut TestAppContext) {
+    let terminal = make_terminal(cx);
+    let weak_terminal = terminal.downgrade();
+
+    drop(terminal);
+    cx.run_until_parked();
+
+    assert!(weak_terminal.upgrade().is_none());
   }
 
   #[gpui::test]

@@ -13,13 +13,13 @@ pub struct PaneGroup {
   root: PaneNode,
   active_leaf_id: Option<PaneLeafId>,
   next_leaf_id: u64,
-  workspace: Entity<Workspace>,
+  workspace: WeakEntity<Workspace>,
   focus_handle: FocusHandle,
 }
 
 impl PaneGroup {
   pub fn new(
-    workspace: Entity<Workspace>,
+    workspace: WeakEntity<Workspace>,
     initial_view: Entity<TerminalView>,
     cx: &mut Context<Self>,
   ) -> Self {
@@ -36,15 +36,17 @@ impl PaneGroup {
 
   /// 订阅 TerminalView 事件：标题变更时重新渲染，子进程退出时自动关闭对应 pane。
   fn subscribe_to_view(cx: &mut Context<Self>, view: &Entity<TerminalView>) {
-    let view_clone = view.clone();
     cx.subscribe(
       view,
-      move |this, _view, event: &TerminalViewEvent, cx| match event {
+      move |this, view, event: &TerminalViewEvent, cx| match event {
         TerminalViewEvent::TitleChanged => {
           cx.notify();
         }
         TerminalViewEvent::Closed => {
-          this.close_leaf_by_view(&view_clone, cx);
+          this.close_leaf_by_view(&view, cx);
+        }
+        TerminalViewEvent::Focused => {
+          this.activate_leaf_by_view(&view, cx);
         }
       },
     )
@@ -52,9 +54,13 @@ impl PaneGroup {
   }
 
   fn create_terminal_view(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
-    let result = self
+    let result = match self
       .workspace
-      .update(cx, |ws, cx| Workspace::create_terminal_view(cx, &ws.kind));
+      .update(cx, |ws, cx| Workspace::create_terminal_view(cx, &ws.kind))
+    {
+      Ok(result) => result,
+      Err(_) => return None,
+    };
     match result {
       Ok(view) => {
         Self::subscribe_to_view(cx, &view);
@@ -67,7 +73,7 @@ impl PaneGroup {
     }
   }
 
-  fn split_pane(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
+  fn split_pane(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
     let Some(active_id) = self.active_leaf_id else {
       return;
     };
@@ -76,18 +82,17 @@ impl PaneGroup {
     };
     let new_id = PaneLeafId(self.next_leaf_id);
     self.next_leaf_id += 1;
+    new_view.read(cx).focus(window);
     let new_leaf = PaneNode::new_leaf(new_id, PaneView::Terminal(new_view));
     self.root.split_at(active_id, direction, new_leaf);
     self.active_leaf_id = Some(new_id);
     cx.notify();
   }
 
-  fn close_active_pane(&mut self, cx: &mut Context<Self>) {
-    let Some(active_id) = self.active_leaf_id else {
-      return;
-    };
+  fn close_active_pane(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
+    let active_id = self.active_leaf_id?;
     if self.root.leaf_count() <= 1 {
-      return;
+      return None;
     }
     let new_focus = self
       .root
@@ -96,6 +101,20 @@ impl PaneGroup {
     self.root.remove_leaf(active_id);
     self.active_leaf_id = new_focus;
     cx.notify();
+    new_focus.and_then(|id| match self.root.find_view_by_id(id)? {
+      PaneView::Terminal(view) => Some(view.clone()),
+    })
+  }
+
+  fn activate_leaf_by_view(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+    let target = PaneView::Terminal(view.clone());
+    let Some(leaf_id) = self.root.find_leaf_id_by_view(&target) else {
+      return;
+    };
+    if self.active_leaf_id != Some(leaf_id) {
+      self.active_leaf_id = Some(leaf_id);
+      cx.notify();
+    }
   }
 
   /// 按视图关闭对应的叶子节点。用于子进程退出时自动清理。
@@ -126,16 +145,18 @@ impl PaneGroup {
       .or_else(|| self.root.first_leaf_view().map(|v| v.title(cx)))
   }
 
-  fn on_action_split_right(&mut self, _: &SplitRight, _: &mut Window, cx: &mut Context<Self>) {
-    self.split_pane(SplitDirection::Horizontal, cx);
+  fn on_action_split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
+    self.split_pane(SplitDirection::Horizontal, window, cx);
   }
 
-  fn on_action_split_down(&mut self, _: &SplitDown, _: &mut Window, cx: &mut Context<Self>) {
-    self.split_pane(SplitDirection::Vertical, cx);
+  fn on_action_split_down(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
+    self.split_pane(SplitDirection::Vertical, window, cx);
   }
 
-  fn on_action_close_pane(&mut self, _: &ClosePane, _: &mut Window, cx: &mut Context<Self>) {
-    self.close_active_pane(cx);
+  fn on_action_close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(view) = self.close_active_pane(cx) {
+      view.read(cx).focus(window);
+    }
   }
 
   fn render_node(node: &PaneNode, has_siblings: bool, cx: &App) -> AnyElement {
@@ -235,6 +256,7 @@ impl PaneGroup {
       .update(cx, |_ws, cx| {
         Workspace::create_terminal_view_with_pty(cx, pty)
       })
+      .ok()?
       .ok()?;
     Self::subscribe_to_view(cx, &view);
     let new_id = PaneLeafId(self.next_leaf_id);
@@ -248,7 +270,7 @@ impl PaneGroup {
 
   /// 测试用：暴露 close_active_pane。
   pub(crate) fn close_active_pane_for_test(&mut self, cx: &mut Context<Self>) {
-    self.close_active_pane(cx);
+    let _ = self.close_active_pane(cx);
   }
 
   /// 测试用：直接按视图关闭对应 leaf（模拟子进程退出触发的自动关闭）。
@@ -305,25 +327,26 @@ impl Focusable for PaneGroup {
 #[cfg(test)]
 mod tests {
   use super::{PaneGroup, SplitDirection};
-  use crate::terminal::FakePty;
+  use crate::terminal::{FakePty, TerminalViewEvent};
   use crate::workspace::Workspace;
   use crate::workspace_kind::WorkspaceKind;
   use gpui::{AppContext as _, Entity, TestAppContext};
   use std::sync::Arc;
 
-  /// 创建一个使用 FakePty 的 Workspace，并返回其激活 tab 的 PaneGroup 实体。
-  fn make_pane_group(cx: &mut TestAppContext) -> Entity<PaneGroup> {
+  /// 创建一个使用 FakePty 的 Workspace 及其激活 tab 的 PaneGroup。
+  fn make_pane_group(cx: &mut TestAppContext) -> (Entity<Workspace>, Entity<PaneGroup>) {
     let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
-    ws.read_with(cx, |w, _| {
+    let group = ws.read_with(cx, |w, _| {
       w.active_tab().expect("has tab").pane_group.clone()
-    })
+    });
+    (ws, group)
   }
 
   #[gpui::test]
   fn split_increments_leaf_count_and_switches_active(cx: &mut TestAppContext) {
-    let group = make_pane_group(cx);
+    let (_workspace, group) = make_pane_group(cx);
     let original_active = group.read_with(cx, |g, _| g.active_leaf_id_for_test());
 
     let new_id = group.update(cx, |g, cx| {
@@ -341,7 +364,7 @@ mod tests {
 
   #[gpui::test]
   fn close_active_pane_switches_focus_back(cx: &mut TestAppContext) {
-    let group = make_pane_group(cx);
+    let (_workspace, group) = make_pane_group(cx);
     let first = group.read_with(cx, |g, _| g.active_leaf_id_for_test().expect("active"));
 
     let new_id = group
@@ -362,7 +385,7 @@ mod tests {
 
   #[gpui::test]
   fn close_active_pane_refuses_when_single_leaf(cx: &mut TestAppContext) {
-    let group = make_pane_group(cx);
+    let (_workspace, group) = make_pane_group(cx);
     group.update(cx, |g, cx| g.close_active_pane_for_test(cx));
     // 只剩一个 leaf 时不应关闭
     group.read_with(cx, |g, _| {
@@ -373,7 +396,7 @@ mod tests {
 
   #[gpui::test]
   fn close_leaf_by_view_removes_target_when_multiple(cx: &mut TestAppContext) {
-    let group = make_pane_group(cx);
+    let (_workspace, group) = make_pane_group(cx);
     let new_id = group
       .update(cx, |g, cx| {
         g.split_pane_with_fake_pty(SplitDirection::Vertical, cx)
@@ -392,7 +415,7 @@ mod tests {
 
   #[gpui::test]
   fn close_leaf_by_view_refuses_when_single_leaf(cx: &mut TestAppContext) {
-    let group = make_pane_group(cx);
+    let (_workspace, group) = make_pane_group(cx);
     let only_view = group.read_with(cx, |g, _| {
       g.view_for_leaf(g.active_leaf_id_for_test().expect("active"))
         .expect("view")
@@ -422,5 +445,52 @@ mod tests {
     cx.run_until_parked();
     let title = group.read_with(cx, |g, cx| g.active_leaf_title(cx));
     assert_eq!(title.as_deref(), Some("Pane Title"));
+  }
+
+  #[gpui::test]
+  fn focused_terminal_becomes_active_leaf(cx: &mut TestAppContext) {
+    let (_workspace, group) = make_pane_group(cx);
+    let first_id = group.read_with(cx, |group, _| group.active_leaf_id_for_test().unwrap());
+    let first_view = group
+      .read_with(cx, |group, _| group.view_for_leaf(first_id))
+      .expect("first view");
+
+    let second_id = group
+      .update(cx, |group, cx| {
+        group.split_pane_with_fake_pty(SplitDirection::Horizontal, cx)
+      })
+      .expect("split");
+    assert_eq!(
+      group.read_with(cx, |group, _| group.active_leaf_id_for_test()),
+      Some(second_id)
+    );
+
+    first_view.update(cx, |_, cx| cx.emit(TerminalViewEvent::Focused));
+    cx.run_until_parked();
+
+    assert_eq!(
+      group.read_with(cx, |group, _| group.active_leaf_id_for_test()),
+      Some(first_id)
+    );
+  }
+
+  #[gpui::test]
+  fn closing_pane_releases_terminal_view(cx: &mut TestAppContext) {
+    let (_workspace, group) = make_pane_group(cx);
+    let leaf_id = group
+      .update(cx, |group, cx| {
+        group.split_pane_with_fake_pty(SplitDirection::Horizontal, cx)
+      })
+      .expect("split");
+    let view = group
+      .read_with(cx, |group, _| group.view_for_leaf(leaf_id))
+      .expect("view");
+    let weak_view = view.downgrade();
+
+    group.update(cx, |group, cx| group.close_active_pane_for_test(cx));
+    drop(view);
+    cx.run_until_parked();
+
+    assert!(weak_view.upgrade().is_none());
   }
 }
