@@ -64,7 +64,7 @@ impl Workspace {
 
   fn make_tab(cx: &mut gpui::Context<Self>, kind: &WorkspaceKind) -> Result<TabItem, String> {
     let terminal_view = Self::create_terminal_view(cx, kind)?;
-    let workspace_handle = cx.entity().clone();
+    let workspace_handle = cx.entity().downgrade();
     let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
     Ok(TabItem {
       id: generate_tab_id(),
@@ -152,7 +152,7 @@ impl Workspace {
     cx.subscribe(&view, |_, _, event: &TerminalViewEvent, cx| {
       if matches!(
         event,
-        TerminalViewEvent::TitleChanged | TerminalViewEvent::Closed
+        TerminalViewEvent::TitleChanged | TerminalViewEvent::Closed | TerminalViewEvent::Focused
       ) {
         cx.notify();
       }
@@ -224,7 +224,7 @@ impl Workspace {
     pty: Arc<dyn crate::terminal::Pty>,
   ) -> Result<TabItem, String> {
     let terminal_view = Self::create_terminal_view_with_pty(cx, pty)?;
-    let workspace_handle = cx.entity().clone();
+    let workspace_handle = cx.entity().downgrade();
     let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
     Ok(TabItem {
       id: generate_tab_id(),
@@ -479,5 +479,16 @@ mod tests {
         "each tab should have its own pane group"
       );
     });
+  }
+
+  #[gpui::test]
+  fn pane_groups_do_not_keep_workspace_alive(cx: &mut TestAppContext) {
+    let workspace = make_workspace(cx, WorkspaceKind::Local);
+    let weak_workspace = workspace.downgrade();
+
+    drop(workspace);
+    cx.run_until_parked();
+
+    assert!(weak_workspace.upgrade().is_none());
   }
 }

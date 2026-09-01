@@ -180,10 +180,24 @@ impl Pty for LocalPty {
 
 impl Drop for LocalPty {
   fn drop(&mut self) {
-    // 同步 kill 子进程。drop writer_tx / reader_rx 会关闭通道，
-    // reader/writer 线程检测到通道关闭后自行退出。
-    let mut killer = self.child.clone_killer();
-    let _ = killer.kill();
+    // 直接通过 Child 终止并回收子进程。portable-pty 的 Unix
+    // Child::kill 会先发 SIGHUP，超时后再发 SIGKILL；wait 避免僵尸进程。
+    match self.child.try_wait() {
+      Ok(Some(_)) => {}
+      Ok(None) => {
+        if let Err(error) = self.child.kill() {
+          warn!(target: "catus", "failed to terminate PTY child: {}", error);
+        }
+        if let Err(error) = self.child.wait() {
+          warn!(target: "catus", "failed to reap PTY child: {}", error);
+        }
+      }
+      Err(error) => {
+        warn!(target: "catus", "failed to query PTY child status: {}", error);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+      }
+    }
   }
 }
 
