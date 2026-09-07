@@ -5,6 +5,7 @@ use gpui_component::tab::{Tab, TabBar, TabVariant};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, WindowExt};
 
 use crate::app::App;
+use crate::terminal::title::{MAX_TAB_TITLE_CHARS, truncate_title};
 use crate::workspace::Workspace;
 
 pub struct TitleBarTabs {
@@ -102,8 +103,13 @@ impl Render for TitleBarTabs {
             // 当前 workspace 的每个 tab 渲染一个 Tab。
             let (icon, title) = active_workspace
               .and_then(|ws| ws.read(cx).tabs.get(ix))
-              .and_then(|tab| tab.pane_group.read(cx).active_leaf_title(cx))
-              .map(|title| (IconName::SquareTerminal, title))
+              .map(|tab| {
+                let title = tab.title(cx);
+                (
+                  IconName::SquareTerminal,
+                  truncate_title(&title, MAX_TAB_TITLE_CHARS),
+                )
+              })
               .unwrap_or((IconName::SquareTerminal, "Terminal".to_string()));
             let title: SharedString = title.into();
 

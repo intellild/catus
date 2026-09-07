@@ -248,13 +248,22 @@ impl PaneGroup {
     direction: SplitDirection,
     cx: &mut Context<Self>,
   ) -> Option<PaneLeafId> {
-    let active_id = self.active_leaf_id?;
     let pty = std::sync::Arc::new(crate::terminal::FakePty::new())
       as std::sync::Arc<dyn crate::terminal::Pty>;
+    self.split_pane_with_pty_for_test(direction, pty, cx)
+  }
+
+  fn split_pane_with_pty_for_test(
+    &mut self,
+    direction: SplitDirection,
+    pty: std::sync::Arc<dyn crate::terminal::Pty>,
+    cx: &mut Context<Self>,
+  ) -> Option<PaneLeafId> {
+    let active_id = self.active_leaf_id?;
     let view = self
       .workspace
-      .update(cx, |_ws, cx| {
-        Workspace::create_terminal_view_with_pty(cx, pty)
+      .update(cx, |ws, cx| {
+        Workspace::create_terminal_view_with_pty(cx, pty, ws.kind.default_terminal_title())
       })
       .ok()?
       .ok()?;
@@ -337,7 +346,13 @@ mod tests {
   fn make_pane_group(cx: &mut TestAppContext) -> (Entity<Workspace>, Entity<PaneGroup>) {
     let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
-    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+    let ws = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        pty_dyn,
+        cx,
+      )
+    });
     let group = ws.read_with(cx, |w, _| {
       w.active_tab().expect("has tab").pane_group.clone()
     });
@@ -433,12 +448,18 @@ mod tests {
     // 重新构造以便注入 OSC 标题
     let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
-    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+    let ws = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        pty_dyn,
+        cx,
+      )
+    });
     let group = ws.read_with(cx, |w, _| w.active_tab().expect("tab").pane_group.clone());
 
-    // 初始标题为 "Terminal"
+    // 初始标题为启动程序 basename。
     let title = group.read_with(cx, |g, cx| g.active_leaf_title(cx));
-    assert_eq!(title.as_deref(), Some("Terminal"));
+    assert_eq!(title.as_deref(), Some("zsh"));
 
     // 注入 OSC 标题后，active_leaf_title 跟随更新
     fake.push_bytes("\x1b]2;Pane Title\x07").unwrap();
@@ -471,6 +492,49 @@ mod tests {
     assert_eq!(
       group.read_with(cx, |group, _| group.active_leaf_id_for_test()),
       Some(first_id)
+    );
+  }
+
+  #[gpui::test]
+  fn tab_title_follows_focused_terminal(cx: &mut TestAppContext) {
+    let first_fake = Arc::new(FakePty::new());
+    let first_pty: Arc<dyn crate::terminal::Pty> = first_fake.clone();
+    let workspace = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        first_pty,
+        cx,
+      )
+    });
+    let group = workspace.read_with(cx, |workspace, _| {
+      workspace.active_tab().unwrap().pane_group.clone()
+    });
+    let first_id = group.read_with(cx, |group, _| group.active_leaf_id_for_test().unwrap());
+    let first_view = group
+      .read_with(cx, |group, _| group.view_for_leaf(first_id))
+      .unwrap();
+
+    let second_fake = Arc::new(FakePty::new());
+    let second_pty: Arc<dyn crate::terminal::Pty> = second_fake.clone();
+    group.update(cx, |group, cx| {
+      group
+        .split_pane_with_pty_for_test(SplitDirection::Horizontal, second_pty, cx)
+        .expect("split pane");
+    });
+
+    first_fake.push_bytes("\x1b]2;First\x07").unwrap();
+    second_fake.push_bytes("\x1b]2;Second\x07").unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+      group.read_with(cx, |group, cx| group.active_leaf_title(cx)),
+      Some("Second".to_string())
+    );
+
+    first_view.update(cx, |_, cx| cx.emit(TerminalViewEvent::Focused));
+    cx.run_until_parked();
+    assert_eq!(
+      group.read_with(cx, |group, cx| group.active_leaf_title(cx)),
+      Some("First".to_string())
     );
   }
 
