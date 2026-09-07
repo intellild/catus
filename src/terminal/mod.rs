@@ -4,6 +4,7 @@ pub mod local_pty;
 pub mod model;
 pub mod pty;
 pub mod terminal_element;
+pub(crate) mod title;
 pub mod view;
 
 // 重导出主要类型

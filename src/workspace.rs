@@ -6,6 +6,7 @@ use gpui_component::IconName;
 use tracing::info;
 
 use crate::pane::PaneGroup;
+use crate::terminal::title::normalize_title;
 use crate::terminal::{LocalPty, Terminal, TerminalSize, TerminalView, TerminalViewEvent};
 use crate::workspace_kind::WorkspaceKind;
 
@@ -22,6 +23,26 @@ pub fn generate_tab_id() -> TabId {
 pub struct TabItem {
   pub id: TabId,
   pub pane_group: Entity<PaneGroup>,
+  title_override: Option<String>,
+}
+
+impl TabItem {
+  fn new(pane_group: Entity<PaneGroup>) -> Self {
+    Self {
+      id: generate_tab_id(),
+      pane_group,
+      title_override: None,
+    }
+  }
+
+  /// WezTerm/kitty 风格：显式 tab 标题优先，否则跟随活动 pane。
+  pub fn title(&self, cx: &gpui::App) -> String {
+    self
+      .title_override
+      .clone()
+      .or_else(|| self.pane_group.read(cx).active_leaf_title(cx))
+      .unwrap_or_else(|| "Terminal".to_string())
+  }
 }
 
 pub struct Workspace {
@@ -66,10 +87,7 @@ impl Workspace {
     let terminal_view = Self::create_terminal_view(cx, kind)?;
     let workspace_handle = cx.entity().downgrade();
     let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
-    Ok(TabItem {
-      id: generate_tab_id(),
-      pane_group,
-    })
+    Ok(TabItem::new(pane_group))
   }
 
   pub fn add_tab(&mut self, tab: TabItem, cx: &mut gpui::Context<Self>) -> TabId {
@@ -104,6 +122,26 @@ impl Workspace {
     }
   }
 
+  /// 设置显式 tab 标题。`None`、空字符串或纯空白会清除覆盖值，
+  /// 重新跟随活动 pane 的标题。
+  #[allow(dead_code)]
+  pub fn set_tab_title(
+    &mut self,
+    id: TabId,
+    title: Option<String>,
+    cx: &mut gpui::Context<Self>,
+  ) -> bool {
+    let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+      return false;
+    };
+    let title = title.as_deref().and_then(normalize_title);
+    if tab.title_override != title {
+      tab.title_override = title;
+      cx.notify();
+    }
+    true
+  }
+
   pub fn active_tab(&self) -> Option<&TabItem> {
     self
       .active_tab_id
@@ -135,7 +173,7 @@ impl Workspace {
       _ => LocalPty::new(size, kind.command()),
     }
     .map_err(|e| format!("Failed to create PTY: {}", e))?;
-    Self::create_terminal_view_with_pty(cx, Arc::new(pty))
+    Self::create_terminal_view_with_pty(cx, Arc::new(pty), kind.default_terminal_title())
   }
 
   /// 用给定的 PTY 创建 Terminal + TerminalView 实体，并订阅 TerminalViewEvent。
@@ -145,8 +183,11 @@ impl Workspace {
   pub(crate) fn create_terminal_view_with_pty(
     cx: &mut gpui::Context<Self>,
     pty: Arc<dyn crate::terminal::Pty>,
+    default_title: String,
   ) -> Result<Entity<TerminalView>, String> {
-    let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("Failed to create terminal"));
+    let terminal = cx.new(|cx| {
+      Terminal::new_with_default_title(pty, default_title, cx).expect("Failed to create terminal")
+    });
     let view = cx.new(|cx| TerminalView::new(terminal, cx));
 
     cx.subscribe(&view, |_, _, event: &TerminalViewEvent, cx| {
@@ -167,7 +208,7 @@ impl Workspace {
 impl Workspace {
   /// 用 FakePty 创建一个 Workspace，避免测试中启动真实 shell。
   pub(crate) fn new_with_fake_pty(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
-    match Self::make_tab_with_fake_pty(cx) {
+    match Self::make_tab_with_fake_pty(cx, &kind) {
       Ok(tab) => {
         let active_tab_id = Some(tab.id);
         Self {
@@ -193,7 +234,7 @@ impl Workspace {
     pty: Arc<dyn crate::terminal::Pty>,
     cx: &mut gpui::Context<Self>,
   ) -> Self {
-    match Self::make_tab_with_pty(cx, pty) {
+    match Self::make_tab_with_pty(cx, &kind, pty) {
       Ok(tab) => {
         let active_tab_id = Some(tab.id);
         Self {
@@ -213,23 +254,25 @@ impl Workspace {
     }
   }
 
-  fn make_tab_with_fake_pty(cx: &mut gpui::Context<Self>) -> Result<TabItem, String> {
+  fn make_tab_with_fake_pty(
+    cx: &mut gpui::Context<Self>,
+    kind: &WorkspaceKind,
+  ) -> Result<TabItem, String> {
     let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
-    Self::make_tab_with_pty(cx, pty)
+    Self::make_tab_with_pty(cx, kind, pty)
   }
 
   /// 用给定的 PTY 创建初始 tab，供需要向终端注入数据的测试使用。
   fn make_tab_with_pty(
     cx: &mut gpui::Context<Self>,
+    kind: &WorkspaceKind,
     pty: Arc<dyn crate::terminal::Pty>,
   ) -> Result<TabItem, String> {
-    let terminal_view = Self::create_terminal_view_with_pty(cx, pty)?;
+    let terminal_view =
+      Self::create_terminal_view_with_pty(cx, pty, kind.default_terminal_title())?;
     let workspace_handle = cx.entity().downgrade();
     let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
-    Ok(TabItem {
-      id: generate_tab_id(),
-      pane_group,
-    })
+    Ok(TabItem::new(pane_group))
   }
 
   /// 测试辅助：使用 FakePty 添加新 tab，避免启动真实 shell。
@@ -247,7 +290,7 @@ impl Workspace {
     cx: &mut gpui::Context<Self>,
     pty: Arc<dyn crate::terminal::Pty>,
   ) -> Result<TabId, String> {
-    let tab = Self::make_tab_with_pty(cx, pty)?;
+    let tab = Self::make_tab_with_pty(cx, &self.kind, pty)?;
     Ok(self.add_tab(tab, cx))
   }
 }
@@ -301,14 +344,8 @@ mod tests {
     ws.update(cx, |w, cx| {
       // 借用现有 tab 的 pane_group 作为占位，仅用于测试 close 索引逻辑
       let placeholder_pane = w.tabs[0].pane_group.clone();
-      let tab1 = TabItem {
-        id: generate_tab_id(),
-        pane_group: placeholder_pane.clone(),
-      };
-      let tab2 = TabItem {
-        id: generate_tab_id(),
-        pane_group: placeholder_pane,
-      };
+      let tab1 = TabItem::new(placeholder_pane.clone());
+      let tab2 = TabItem::new(placeholder_pane);
       w.add_tab(tab1, cx);
       w.add_tab(tab2, cx);
     });
@@ -351,14 +388,20 @@ mod tests {
     // 保留底层 FakePty 引用，以便注入输出
     let fake = Arc::new(crate::terminal::FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
-    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+    let ws = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        pty_dyn,
+        cx,
+      )
+    });
 
-    // 初始 tab 标题应为 "Terminal"
+    // 初始 tab 标题使用启动程序 basename。
     let initial = ws.read_with(cx, |w, cx| {
       let pane = w.active_tab().expect("has tab").pane_group.clone();
       pane.read(cx).active_leaf_title(cx)
     });
-    assert_eq!(initial.as_deref(), Some("Terminal"));
+    assert_eq!(initial.as_deref(), Some("zsh"));
 
     // 注入 OSC 标题序列: ESC ] 2 ; My Tab Title BEL
     fake.push_bytes("\x1b]2;My Tab Title\x07").unwrap();
@@ -372,14 +415,20 @@ mod tests {
     assert_eq!(updated.as_deref(), Some("My Tab Title"));
   }
 
-  /// 验证空标题的 OSC 序列不会把 tab 标题覆盖成空字符串。
+  /// 验证空标题的 OSC 序列会清除应用标题并回退到启动程序。
   #[gpui::test]
-  fn tab_title_not_overwritten_by_empty_osc(cx: &mut TestAppContext) {
+  fn tab_title_falls_back_after_empty_osc(cx: &mut TestAppContext) {
     use gpui::AppContext as _;
 
     let fake = Arc::new(crate::terminal::FakePty::new());
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
-    let ws = cx.new(|cx| Workspace::new_with_pty(WorkspaceKind::Local, pty_dyn, cx));
+    let ws = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        pty_dyn,
+        cx,
+      )
+    });
 
     // 先设置一个标题
     fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
@@ -390,14 +439,66 @@ mod tests {
     });
     assert_eq!(title.as_deref(), Some("Real Title"));
 
-    // 再注入空标题，tab 标题不应被覆盖
+    // 再注入空标题，tab 标题回退到默认值。
     fake.push_bytes("\x1b]2;   \x07").unwrap();
     cx.run_until_parked();
     let title = ws.read_with(cx, |w, cx| {
       let pane = w.active_tab().expect("has tab").pane_group.clone();
       pane.read(cx).active_leaf_title(cx)
     });
-    assert_eq!(title.as_deref(), Some("Real Title"));
+    assert_eq!(title.as_deref(), Some("zsh"));
+  }
+
+  #[gpui::test]
+  fn explicit_tab_title_overrides_and_can_restore_pane_title(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+
+    let fake = Arc::new(crate::terminal::FakePty::new());
+    let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
+    let ws = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        pty_dyn,
+        cx,
+      )
+    });
+    let tab_id = ws.read_with(cx, |workspace, _| workspace.active_tab_id.unwrap());
+
+    fake.push_bytes("\x1b]2;Application\x07").unwrap();
+    cx.run_until_parked();
+
+    ws.update(cx, |workspace, cx| {
+      assert!(workspace.set_tab_title(tab_id, Some("  Project Alpha  ".to_string()), cx));
+    });
+    assert_eq!(
+      ws.read_with(cx, |workspace, cx| workspace
+        .active_tab()
+        .unwrap()
+        .title(cx)),
+      "Project Alpha"
+    );
+
+    fake.push_bytes("\x1b]2;Other Application\x07").unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+      ws.read_with(cx, |workspace, cx| workspace
+        .active_tab()
+        .unwrap()
+        .title(cx)),
+      "Project Alpha",
+      "explicit title should remain stable when the pane title changes"
+    );
+
+    ws.update(cx, |workspace, cx| {
+      assert!(workspace.set_tab_title(tab_id, None, cx));
+    });
+    assert_eq!(
+      ws.read_with(cx, |workspace, cx| workspace
+        .active_tab()
+        .unwrap()
+        .title(cx)),
+      "Other Application"
+    );
   }
 
   /// 验证点击 + 按钮（add_terminal_tab_with_fake_pty）后确实创建了新 tab。

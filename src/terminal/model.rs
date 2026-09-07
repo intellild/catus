@@ -2,6 +2,7 @@ use crate::terminal::content::{
   CursorState, IndexedCell, SelectionRange, TerminalContent, TerminalEvent, TerminalPoint,
 };
 use crate::terminal::pty::{Pty, TerminalSize};
+use crate::terminal::title::{DEFAULT_TERMINAL_TITLE, normalize_title};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
@@ -161,7 +162,8 @@ pub struct Terminal {
   term: Arc<Mutex<Term>>,
   pty: Option<Arc<dyn Pty>>,
   terminal_size: Option<TerminalSize>,
-  title: String,
+  default_title: String,
+  application_title: Option<String>,
   user_has_scrolled: bool,
   selection: Option<SelectionRange>,
   closed: bool,
@@ -171,7 +173,19 @@ pub struct Terminal {
 
 impl Terminal {
   /// 创建新的终端
+  #[cfg(test)]
   pub fn new(pty: Arc<dyn Pty>, cx: &mut Context<Self>) -> Result<Self> {
+    Self::new_with_default_title(pty, DEFAULT_TERMINAL_TITLE, cx)
+  }
+
+  /// 使用启动命令生成的默认标题创建终端。
+  ///
+  /// 应用发送的 OSC 标题优先于默认标题；清空或重置 OSC 标题后回退。
+  pub fn new_with_default_title(
+    pty: Arc<dyn Pty>,
+    default_title: impl Into<String>,
+    cx: &mut Context<Self>,
+  ) -> Result<Self> {
     let initial_size = TerminalSize::default_size();
     let term_dimensions = TermDimensions::from(initial_size);
 
@@ -223,18 +237,23 @@ impl Terminal {
 
         match event {
           Event::Title(title) => {
-            // 忽略空标题，避免覆盖已有标题
-            if title.trim().is_empty() {
-              continue;
-            }
+            let title = normalize_title(&title);
             if entity
               .update(cx, |terminal, cx| {
-                terminal.title = title.clone();
-                cx.emit(TerminalEvent::TitleChanged);
-                cx.notify();
+                terminal.set_application_title(title, cx);
               })
               .is_err()
             {
+              break;
+            }
+          }
+          Event::ResetTitle => {
+            let entity_dropped = entity
+              .update(cx, |terminal, cx| {
+                terminal.set_application_title(None, cx);
+              })
+              .is_err();
+            if entity_dropped {
               break;
             }
           }
@@ -266,18 +285,35 @@ impl Terminal {
 
     let content = TerminalContent::new();
 
+    let default_title =
+      normalize_title(&default_title.into()).unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string());
+
     Ok(Self {
       content,
       term,
       pty: Some(pty),
       terminal_size: None,
-      title: "Terminal".to_string(),
+      default_title,
+      application_title: None,
       user_has_scrolled: false,
       selection: None,
       closed: false,
       _reader_task: reader_task,
       _event_task: event_task,
     })
+  }
+
+  fn set_application_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+    if self.application_title == title {
+      return;
+    }
+
+    let previous_title = self.title().to_string();
+    self.application_title = title;
+    if self.title() != previous_title {
+      cx.emit(TerminalEvent::TitleChanged);
+      cx.notify();
+    }
   }
 
   fn mark_closed(&mut self, cx: &mut Context<Self>) {
@@ -399,7 +435,10 @@ impl Terminal {
 
   /// 获取终端标题
   pub fn title(&self) -> &str {
-    &self.title
+    self
+      .application_title
+      .as_deref()
+      .unwrap_or(&self.default_title)
   }
 
   /// 子进程是否已退出
@@ -800,10 +839,13 @@ mod tests {
   }
 
   #[gpui::test]
-  fn empty_title_osc_does_not_overwrite(cx: &mut TestAppContext) {
+  fn empty_title_osc_restores_default_title(cx: &mut TestAppContext) {
     let fake = Arc::new(FakePty::new());
     let pty_dyn: Arc<dyn Pty> = fake.clone();
-    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+    let terminal =
+      cx.new(|cx| Terminal::new_with_default_title(pty_dyn, "zsh", cx).expect("create terminal"));
+
+    assert_eq!(terminal.read_with(cx, |t, _| t.title().to_string()), "zsh");
 
     // 先设置一个标题
     fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
@@ -813,12 +855,40 @@ mod tests {
       "Real Title"
     );
 
-    // 再注入空标题，不应覆盖
+    // 再注入空标题，清除应用标题并回退到启动程序。
     fake.push_bytes("\x1b]2;   \x07").unwrap();
     cx.run_until_parked();
+    assert_eq!(terminal.read_with(cx, |t, _| t.title().to_string()), "zsh");
+  }
+
+  #[gpui::test]
+  fn reset_title_event_restores_default_title(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal =
+      cx.new(|cx| Terminal::new_with_default_title(pty_dyn, "zsh", cx).expect("create terminal"));
+
+    // 保存初始的 None 标题、设置应用标题，然后从标题栈恢复 None。
+    fake
+      .push_bytes("\x1b[22t\x1b]2;Temporary\x07\x1b[23t")
+      .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(terminal.read_with(cx, |t, _| t.title().to_string()), "zsh");
+  }
+
+  #[gpui::test]
+  fn application_title_is_trimmed(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let pty_dyn: Arc<dyn Pty> = fake.clone();
+    let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
+
+    fake.push_bytes("\x1b]2;  dev server  \x07").unwrap();
+    cx.run_until_parked();
+
     assert_eq!(
       terminal.read_with(cx, |t, _| t.title().to_string()),
-      "Real Title"
+      "dev server"
     );
   }
 

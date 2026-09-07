@@ -55,6 +55,11 @@ impl WorkspaceKind {
     }
   }
 
+  /// 新 pane 在应用尚未发送 OSC 标题时使用的标题。
+  pub fn default_terminal_title(&self) -> String {
+    self.pty_command().default_title()
+  }
+
   /// 侧边栏展示用的名称。
   pub fn display_name(&self) -> SharedString {
     match self {
@@ -96,6 +101,14 @@ mod tests {
       PtyCommand::program("node", ["scripts/echo-pty.js"])
     );
     assert_eq!(kind.command(), None);
+  }
+
+  #[test]
+  fn terminal_title_uses_launched_program_basename() {
+    let local = WorkspaceKind::local_program("/usr/local/bin/node", ["script.js"]);
+    let ssh = WorkspaceKind::Ssh("ssh user@host".to_string());
+    assert_eq!(local.default_terminal_title(), "node");
+    assert_eq!(ssh.default_terminal_title(), "ssh");
   }
 
   #[test]

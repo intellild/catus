@@ -1,5 +1,6 @@
 use crate::terminal::Pty;
 use crate::terminal::pty::TerminalSize;
+use crate::terminal::title::{DEFAULT_TERMINAL_TITLE, normalize_title};
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender, unbounded};
 use async_trait::async_trait;
@@ -48,6 +49,16 @@ impl PtyCommand {
     }
 
     Self::DefaultShell
+  }
+
+  /// kitty/WezTerm 风格的初始标题：使用实际启动程序的 basename。
+  /// 应用后续发送的 OSC 标题会覆盖它，标题重置后则回退到这里。
+  pub fn default_title(&self) -> String {
+    let program = match self {
+      Self::DefaultShell => default_shell_program(),
+      Self::Program { program, .. } => program.clone(),
+    };
+    executable_name(&program)
   }
 }
 
@@ -141,18 +152,28 @@ fn build_command(command: &PtyCommand) -> CommandBuilder {
     }
     PtyCommand::DefaultShell => {
       // 系统默认 shell
-      #[cfg(target_os = "windows")]
-      {
-        CommandBuilder::new("cmd.exe")
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        std::env::var("SHELL")
-          .map(|shell| CommandBuilder::new(&shell))
-          .unwrap_or_else(|_| CommandBuilder::new("/bin/sh"))
-      }
+      CommandBuilder::new(default_shell_program())
     }
   }
+}
+
+fn default_shell_program() -> String {
+  #[cfg(target_os = "windows")]
+  {
+    "cmd.exe".to_string()
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+  }
+}
+
+fn executable_name(program: &str) -> String {
+  program
+    .rsplit(['/', '\\'])
+    .find(|part| !part.is_empty())
+    .and_then(normalize_title)
+    .unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string())
 }
 
 #[async_trait]
@@ -315,5 +336,27 @@ mod tests {
       argv,
       vec!["node".to_string(), "scripts/echo-pty.js".to_string()]
     );
+  }
+
+  #[test]
+  fn explicit_program_title_uses_executable_basename() {
+    assert_eq!(
+      PtyCommand::program("/usr/local/bin/node", ["script.js"]).default_title(),
+      "node"
+    );
+    assert_eq!(
+      PtyCommand::program(
+        r"C:\Program Files\PowerShell\pwsh.exe",
+        std::iter::empty::<&str>()
+      )
+      .default_title(),
+      "pwsh.exe"
+    );
+  }
+
+  #[test]
+  fn default_shell_title_uses_shell_basename() {
+    let expected = executable_name(&default_shell_program());
+    assert_eq!(PtyCommand::DefaultShell.default_title(), expected);
   }
 }
