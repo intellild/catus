@@ -405,7 +405,7 @@ mod tests {
 
     // 注入 OSC 标题序列: ESC ] 2 ; My Tab Title BEL
     fake.push_bytes("\x1b]2;My Tab Title\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
 
     // tab 标题应已更新为新标题
     let updated = ws.read_with(cx, |w, cx| {
@@ -432,7 +432,7 @@ mod tests {
 
     // 先设置一个标题
     fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     let title = ws.read_with(cx, |w, cx| {
       let pane = w.active_tab().expect("has tab").pane_group.clone();
       pane.read(cx).active_leaf_title(cx)
@@ -441,7 +441,7 @@ mod tests {
 
     // 再注入空标题，tab 标题回退到默认值。
     fake.push_bytes("\x1b]2;   \x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     let title = ws.read_with(cx, |w, cx| {
       let pane = w.active_tab().expect("has tab").pane_group.clone();
       pane.read(cx).active_leaf_title(cx)
@@ -465,7 +465,7 @@ mod tests {
     let tab_id = ws.read_with(cx, |workspace, _| workspace.active_tab_id.unwrap());
 
     fake.push_bytes("\x1b]2;Application\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
 
     ws.update(cx, |workspace, cx| {
       assert!(workspace.set_tab_title(tab_id, Some("  Project Alpha  ".to_string()), cx));
@@ -479,7 +479,7 @@ mod tests {
     );
 
     fake.push_bytes("\x1b]2;Other Application\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     assert_eq!(
       ws.read_with(cx, |workspace, cx| workspace
         .active_tab()

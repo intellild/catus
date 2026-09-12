@@ -17,4 +17,4 @@ pub use view::{TerminalView, TerminalViewEvent};
 #[cfg(test)]
 pub mod fake_pty;
 #[cfg(test)]
-pub use fake_pty::FakePty;
+pub use fake_pty::{FakePty, flush_pty_output};

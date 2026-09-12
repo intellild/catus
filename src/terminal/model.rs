@@ -8,14 +8,56 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
-use async_channel::{Sender, unbounded};
+use async_channel::{Receiver, Sender, unbounded};
 use async_lock::Mutex;
 use gpui::*;
+use std::future::{Future, poll_fn};
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
 use tracing::debug;
 
 /// 默认滚动历史行数
 const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
+
+/// 从首块输出开始计时，为 120Hz 帧预算保留解析和绘制时间。
+pub(super) const OUTPUT_BATCH_WINDOW: Duration = Duration::from_millis(3);
+/// 达到上限时提前解析，避免持续输出导致 buffer 和单次持锁时间无限增长。
+/// 保留完整 PTY 数据块，因此实际批次最多会超过此阈值一个数据块。
+const OUTPUT_BATCH_MAX_BYTES: usize = 256 * 1024;
+
+/// 空闲时等待首块数据；窗口内复用 buffer 合并字节，EOF 时先交付剩余输出。
+async fn read_output_batch(
+  reader: &Receiver<Vec<u8>>,
+  executor: &BackgroundExecutor,
+  buffer: &mut Vec<u8>,
+) -> bool {
+  buffer.clear();
+  while buffer.is_empty() {
+    let Ok(data) = reader.recv().await else {
+      return false;
+    };
+    buffer.extend_from_slice(&data);
+  }
+
+  let deadline = executor.now() + OUTPUT_BATCH_WINDOW;
+  let mut timer = pin!(executor.timer(OUTPUT_BATCH_WINDOW));
+  while buffer.len() < OUTPUT_BATCH_MAX_BYTES {
+    let mut receive = pin!(reader.recv());
+    let data = poll_fn(|cx| {
+      // 优先检查固定截止时间，持续就绪的 reader 不能饿死定时器。
+      if executor.now() >= deadline || timer.as_mut().poll(cx).is_ready() {
+        return Poll::Ready(None);
+      }
+      receive.as_mut().poll(cx).map(Result::ok)
+    })
+    .await;
+    let Some(data) = data else { break };
+    buffer.extend_from_slice(&data);
+  }
+  true
+}
 
 /// 终端尺寸结构，用于 alacritty 的 Dimensions trait
 #[derive(Clone, Copy, Debug)]
@@ -144,8 +186,9 @@ struct ExtractedTerminalData {
 ///
 /// ```text
 /// PTY 数据到达
+///   → background_spawn: 合并首块起 3ms 内的字节（达到大小上限时提前提交）
 ///   → background_spawn: term.lock().advance(data)   ← 只做 VTE 解析
-///   → entity.update: cx.notify()                     ← 只发信号，不提取数据
+///   → entity.update: cx.notify()                     ← 每批只发一次信号，不提取数据
 ///   → GPUI 帧循环触发 TerminalElement::prepaint()
 ///     → terminal.refresh_content(cx)
 ///       → term.lock().extract()                      ← 开锁提取渲染数据
@@ -205,17 +248,27 @@ impl Terminal {
     let pty_reader = pty.reader();
 
     // PTY 读取任务：「生产」侧
-    // 从 PTY 获取原始数据 → VTE 解析写入 alacritty Term → notify UI 线程
+    // 后台合并 PTY 原始数据 → 每批一次 VTE 解析 → notify UI 线程
     // 这里不提取渲染数据，提取放在 prepaint 阶段按需执行
     let event_term = term.clone();
     let reader_task = cx.spawn(async move |entity, cx| {
       let term = event_term;
-      while let Ok(data) = pty_reader.recv().await {
+      let mut buffer = Vec::new();
+      loop {
         let term = term.clone();
-        cx.background_spawn(async move {
-          term.lock().await.advance(&data);
-        })
-        .await;
+        let reader = pty_reader.clone();
+        let executor = cx.background_executor().clone();
+        let batch = cx
+          .background_spawn(async move {
+            if !read_output_batch(&reader, &executor, &mut buffer).await {
+              return None;
+            }
+            term.lock().await.advance(&buffer);
+            Some(buffer)
+          })
+          .await;
+        let Some(data) = batch else { break };
+        buffer = data;
 
         if entity.update(cx, |_, cx| cx.notify()).is_err() {
           return;
@@ -648,14 +701,16 @@ impl EventEmitter<TerminalEvent> for Terminal {}
 
 #[cfg(test)]
 mod tests {
-  use super::{Pty, Terminal, is_word_boundary};
+  use super::{OUTPUT_BATCH_MAX_BYTES, OUTPUT_BATCH_WINDOW, Pty, Terminal, is_word_boundary};
   use crate::terminal::content::{IndexedCell, TerminalPoint};
   use crate::terminal::fake_pty::FakePty;
   use crate::terminal::{LocalPty, PtyCommand, TerminalSize};
   use alacritty_terminal::term::TermMode;
   use gpui::{AppContext as _, Bounds, Entity, TestAppContext, point, px, size};
+  use std::cell::Cell;
   use std::path::Path;
   use std::process::Command;
+  use std::rc::Rc;
   use std::sync::Arc;
   use std::time::{Duration, Instant};
 
@@ -663,6 +718,162 @@ mod tests {
   fn make_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
     let pty = Arc::new(FakePty::new()) as Arc<dyn Pty>;
     cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"))
+  }
+
+  fn first_row(terminal: &Entity<Terminal>, cx: &mut TestAppContext) -> String {
+    terminal.update(cx, |terminal, cx| {
+      terminal.refresh_content(cx);
+      terminal
+        .content()
+        .cells
+        .iter()
+        .filter(|cell| cell.point.line.0 == 0)
+        .map(|cell| cell.cell.c)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+    })
+  }
+
+  fn count_notifications(
+    terminal: &Entity<Terminal>,
+    cx: &mut TestAppContext,
+  ) -> (Rc<Cell<usize>>, gpui::Subscription) {
+    let count = Rc::new(Cell::new(0));
+    let observed = count.clone();
+    let subscription = cx.update(|cx| {
+      cx.observe(terminal, move |_, _| {
+        observed.set(observed.get() + 1);
+      })
+    });
+    (count, subscription)
+  }
+
+  #[gpui::test]
+  fn output_window_merges_chunks_without_extending_deadline(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let terminal = cx.new(|cx| Terminal::new(fake.clone(), cx).unwrap());
+    let (notifications, _subscription) = count_notifications(&terminal, cx);
+
+    for text in ["one", " two", " three"] {
+      fake.push_bytes(text).unwrap();
+      cx.run_until_parked();
+      assert_eq!(notifications.get(), 0);
+      assert_eq!(first_row(&terminal, cx), "");
+      cx.background_executor
+        .advance_clock(Duration::from_millis(1));
+    }
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 1);
+    assert_eq!(first_row(&terminal, cx), "one two three");
+
+    cx.background_executor
+      .advance_clock(Duration::from_millis(9));
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 1, "idle terminals should not notify");
+
+    fake.push_bytes("!").unwrap();
+    crate::terminal::flush_pty_output(cx);
+    assert_eq!(notifications.get(), 2, "a lone chunk must also be flushed");
+    assert_eq!(first_row(&terminal, cx), "one two three!");
+  }
+
+  #[gpui::test]
+  fn output_size_limit_flushes_early_and_preserves_following_bytes(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let terminal = cx.new(|cx| Terminal::new(fake.clone(), cx).unwrap());
+    let (notifications, _subscription) = count_notifications(&terminal, cx);
+
+    // 多个小块填满批次；回车不增加滚动历史，末尾可见字符验证数据顺序。
+    for _ in 0..OUTPUT_BATCH_MAX_BYTES / 4096 {
+      fake.push_output(vec![b'\r'; 4096]).unwrap();
+    }
+    fake.push_bytes("tail").unwrap();
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 1, "full batches flush before 3ms");
+    assert_eq!(first_row(&terminal, cx), "");
+
+    crate::terminal::flush_pty_output(cx);
+    assert_eq!(notifications.get(), 2);
+    assert_eq!(first_row(&terminal, cx), "tail");
+  }
+
+  #[gpui::test]
+  fn eof_flushes_buffer_before_closed_event(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let terminal = cx.new(|cx| Terminal::new(fake.clone(), cx).unwrap());
+    let closed_row = Rc::new(std::cell::RefCell::new(None));
+    let observed = closed_row.clone();
+    let _subscription = cx.update(|cx| {
+      cx.subscribe(&terminal, move |terminal, event, cx| {
+        if matches!(event, crate::terminal::content::TerminalEvent::Closed) {
+          terminal.update(cx, |terminal, cx| {
+            terminal.refresh_content(cx);
+            let text: String = terminal
+              .content()
+              .cells
+              .iter()
+              .filter(|cell| cell.point.line.0 == 0)
+              .map(|cell| cell.cell.c)
+              .collect();
+            *observed.borrow_mut() = Some(text.trim_end().to_string());
+          });
+        }
+      })
+    });
+
+    fake.push_bytes("final ").unwrap();
+    cx.run_until_parked();
+    fake.push_bytes("output").unwrap();
+    fake.close_reader();
+    cx.run_until_parked();
+
+    assert!(terminal.read_with(cx, |terminal, _| terminal.is_closed()));
+    assert_eq!(closed_row.borrow().as_deref(), Some("final output"));
+  }
+
+  #[gpui::test]
+  fn batching_preserves_split_utf8_and_escape_sequences(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let terminal = cx.new(|cx| Terminal::new(fake.clone(), cx).unwrap());
+
+    // UTF-8 字符与 CSI 都跨越批次边界；后半个 CSI 还分散在多个 PTY 块中。
+    fake.push_output(vec![0xe4]).unwrap();
+    crate::terminal::flush_pty_output(cx);
+    fake
+      .push_output(vec![0xbd, 0xa0, 0x1b, b'[', b'?'])
+      .unwrap();
+    crate::terminal::flush_pty_output(cx);
+    fake.push_bytes("2004").unwrap();
+    fake.push_bytes("h!").unwrap();
+    crate::terminal::flush_pty_output(cx);
+
+    assert!(first_row(&terminal, cx).starts_with('你'));
+    assert!(first_row(&terminal, cx).ends_with('!'));
+    assert!(terminal.read_with(cx, |terminal, _| {
+      terminal.content().mode.contains(TermMode::BRACKETED_PASTE)
+    }));
+
+    fake.push_bytes("\x1b[").unwrap();
+    fake.push_bytes("6n").unwrap();
+    cx.run_until_parked();
+    assert!(fake.writes().is_empty());
+    cx.background_executor.advance_clock(OUTPUT_BATCH_WINDOW);
+    cx.run_until_parked();
+    assert_eq!(fake.writes_string(), "\x1b[1;4R");
+  }
+
+  #[gpui::test]
+  fn dropping_terminal_cancels_pending_output_batch(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let terminal = cx.new(|cx| Terminal::new(fake.clone(), cx).unwrap());
+    let weak = terminal.downgrade();
+    fake.push_bytes("pending").unwrap();
+    cx.run_until_parked();
+
+    drop(terminal);
+    crate::terminal::flush_pty_output(cx);
+    assert!(weak.upgrade().is_none());
   }
 
   fn echo_pty_command() -> Option<PtyCommand> {
@@ -793,7 +1004,7 @@ mod tests {
         Instant::now() < title_deadline,
         "echo helper did not initialize"
       );
-      cx.run_until_parked();
+      crate::terminal::flush_pty_output(cx);
       std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -801,7 +1012,7 @@ mod tests {
     let mut row0 = String::new();
     let echo_deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < echo_deadline {
-      cx.run_until_parked();
+      crate::terminal::flush_pty_output(cx);
       terminal.update(cx, |t, cx| t.refresh_content(cx));
       row0 = terminal.read_with(cx, |t, _| {
         t.content()
@@ -832,7 +1043,7 @@ mod tests {
 
     // 注入 OSC 标题序列: ESC ] 2 ; My Title BEL
     fake.push_bytes("\x1b]2;My Title\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
 
     let title = terminal.read_with(cx, |t, _| t.title().to_string());
     assert_eq!(title, "My Title");
@@ -849,7 +1060,7 @@ mod tests {
 
     // 先设置一个标题
     fake.push_bytes("\x1b]2;Real Title\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     assert_eq!(
       terminal.read_with(cx, |t, _| t.title().to_string()),
       "Real Title"
@@ -857,7 +1068,7 @@ mod tests {
 
     // 再注入空标题，清除应用标题并回退到启动程序。
     fake.push_bytes("\x1b]2;   \x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     assert_eq!(terminal.read_with(cx, |t, _| t.title().to_string()), "zsh");
   }
 
@@ -872,7 +1083,7 @@ mod tests {
     fake
       .push_bytes("\x1b[22t\x1b]2;Temporary\x07\x1b[23t")
       .unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
 
     assert_eq!(terminal.read_with(cx, |t, _| t.title().to_string()), "zsh");
   }
@@ -884,7 +1095,7 @@ mod tests {
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("create terminal"));
 
     fake.push_bytes("\x1b]2;  dev server  \x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
 
     assert_eq!(
       terminal.read_with(cx, |t, _| t.title().to_string()),
@@ -1012,7 +1223,7 @@ mod tests {
 
     // 开启 bracketed paste 模式
     fake.push_bytes("\x1b[?2004h").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     terminal.update(cx, |t, cx| t.refresh_content(cx));
     let bracketed = terminal.read_with(cx, |t, _| {
       t.content().mode.contains(TermMode::BRACKETED_PASTE)
@@ -1038,7 +1249,7 @@ mod tests {
     let terminal = cx.new(|cx| Terminal::new(pty, cx).expect("create terminal"));
 
     fake.push_bytes("\x1b[?2004h").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     terminal.update(cx, |terminal, cx| terminal.refresh_content(cx));
 
     terminal.update(cx, |terminal, cx| {

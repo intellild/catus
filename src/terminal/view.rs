@@ -824,7 +824,7 @@ mod tests {
     let terminal = cx.new(|cx| Terminal::new(pty_dyn, cx).expect("terminal"));
     // 注入输出 "hi" 并提取到 content
     fake.push_bytes("hi").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     terminal.update(cx, |t, cx| t.refresh_content(cx));
     // 设置选区覆盖 "hi"（col 0..=1）
     terminal.update(cx, |t, cx| {

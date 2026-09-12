@@ -13,6 +13,14 @@ use async_channel::{Receiver, Sender, unbounded};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
+/// 让 reader 接收输出并推进合并窗口；使用 GPUI 虚拟时间，不做真实 sleep。
+pub fn flush_pty_output(cx: &mut gpui::TestAppContext) {
+  cx.run_until_parked();
+  cx.background_executor
+    .advance_clock(super::model::OUTPUT_BATCH_WINDOW);
+  cx.run_until_parked();
+}
+
 /// 记录一次 resize 调用。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordedResize {

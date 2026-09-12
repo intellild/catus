@@ -39,7 +39,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 ## 终端架构约定
 
 - `Terminal` 是协调器，不直接绘制 UI。它持有 `TerminalContent`、`Arc<async_lock::Mutex<Term>>`、`Arc<dyn Pty>`、当前尺寸、标题、滚动状态、选择状态和 `closed` 标志。
-- `Term` 是 `alacritty_terminal::Term<EventProxy>` 与 VTE `Processor` 的内部适配层。PTY 输出到达后只做 VTE 解析和 `cx.notify()`。
+- `Term` 是 `alacritty_terminal::Term<EventProxy>` 与 VTE `Processor` 的内部适配层。PTY 输出在后台按首块起固定 3ms 窗口合并，达到 256KiB 阈值时提前提交；每批只做一次 VTE 解析和 `cx.notify()`，EOF 前先解析剩余字节。
 - `TerminalElement::prepaint()` 是渲染数据的消费点：先 `sync_size()`，再 `refresh_content()`，最后 paint 使用快照后的 `TerminalContent`。
 - 保持“生产/消费分离”：后台 PTY reader 只推进 alacritty 状态；可见 UI 帧才提取可渲染数据。
 - `LocalPty` 使用 `std::thread::spawn` 处理阻塞读写，通过 `async_channel` 与 UI/任务侧通信。命令字符串按空白拆分为程序 + 参数后传给 `CommandBuilder`。子进程在 `Drop` 时同步 kill。

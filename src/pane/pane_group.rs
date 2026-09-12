@@ -463,7 +463,7 @@ mod tests {
 
     // 注入 OSC 标题后，active_leaf_title 跟随更新
     fake.push_bytes("\x1b]2;Pane Title\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     let title = group.read_with(cx, |g, cx| g.active_leaf_title(cx));
     assert_eq!(title.as_deref(), Some("Pane Title"));
   }
@@ -524,7 +524,7 @@ mod tests {
 
     first_fake.push_bytes("\x1b]2;First\x07").unwrap();
     second_fake.push_bytes("\x1b]2;Second\x07").unwrap();
-    cx.run_until_parked();
+    crate::terminal::flush_pty_output(cx);
     assert_eq!(
       group.read_with(cx, |group, cx| group.active_leaf_title(cx)),
       Some("Second".to_string())
