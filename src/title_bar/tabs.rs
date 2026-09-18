@@ -101,19 +101,13 @@ impl Render for TitleBarTabs {
           }))
           .children((0..tabs_len).map(|ix| {
             // 当前 workspace 的每个 tab 渲染一个 Tab。
-            let (icon, title) = active_workspace
+            let title = active_workspace
               .and_then(|ws| ws.read(cx).tabs.get(ix))
-              .map(|tab| {
-                let title = tab.title(cx);
-                (
-                  IconName::SquareTerminal,
-                  truncate_title(&title, MAX_TAB_TITLE_CHARS),
-                )
-              })
-              .unwrap_or((IconName::SquareTerminal, "Terminal".to_string()));
+              .map(|tab| truncate_title(&tab.title(cx), MAX_TAB_TITLE_CHARS))
+              .unwrap_or_else(|| "Terminal".to_string());
             let title: SharedString = title.into();
 
-            Tab::new().label(title).icon(icon).suffix(
+            Tab::new().label(title).suffix(
               div()
                 .id("tab-close")
                 .flex()
@@ -141,5 +135,64 @@ impl Render for TitleBarTabs {
           }))
           .child(Icon::new(IconName::Plus).small()),
       )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{App, TitleBarTabs, Workspace};
+  use crate::terminal::{FakePty, flush_pty_output};
+  use crate::workspace_kind::WorkspaceKind;
+  use gpui::{AppContext as _, TestAppContext};
+  use std::cell::Cell;
+  use std::rc::Rc;
+  use std::sync::Arc;
+
+  #[gpui::test]
+  fn osc_title_notifies_title_bar_after_output_batch(cx: &mut TestAppContext) {
+    let fake = Arc::new(FakePty::new());
+    let workspace = cx.new(|cx| {
+      Workspace::new_with_pty(
+        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        fake.clone(),
+        cx,
+      )
+    });
+    let app = cx.new(|cx| App::with_workspaces(vec![workspace.clone()], cx));
+    let tabs = cx.new(|cx| TitleBarTabs::new(app, cx));
+    cx.run_until_parked();
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+      cx.update(|cx| cx.observe(&tabs, move |_, _| observed.set(observed.get() + 1)));
+
+    assert_eq!(
+      workspace.read_with(cx, |workspace, cx| workspace
+        .active_tab()
+        .unwrap()
+        .title(cx)),
+      "zsh"
+    );
+    fake.push_bytes("\x1b]2;Build").unwrap();
+    fake.push_bytes(" server\x07").unwrap();
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), 0);
+    flush_pty_output(cx);
+
+    assert!(notifications.get() > 0, "the title bar must be notified");
+    assert_eq!(
+      tabs.read_with(cx, |tabs, cx| {
+        tabs
+          .app
+          .read(cx)
+          .active_workspace()
+          .unwrap()
+          .read(cx)
+          .active_tab()
+          .unwrap()
+          .title(cx)
+      }),
+      "Build server"
+    );
   }
 }
