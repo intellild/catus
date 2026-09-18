@@ -1,12 +1,14 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
 
 use crate::add_workspace_dialog::open_add_workspace_dialog;
 use crate::app::App;
 
-/// 左侧侧边栏：纵向排列的 Workspace 列表，每行显示图标 + 名称。
+/// 左侧侧边栏：纵向排列的 Workspace 图标栏。
+/// 每行仅显示图标；名称等文字描述通过 hover 触发的 popover（tooltip）展示。
 /// 底部有一个 `+` 按钮用于打开「添加 Workspace」面板。
 pub struct WorkspaceSidebar {
   app: Entity<App>,
@@ -50,15 +52,15 @@ impl WorkspaceSidebar {
   ) -> impl IntoElement {
     let theme = cx.theme();
     let group_name = format!("ws-row-{}", index);
-    let row = div()
+    let mut row = div()
       .id(("workspace-row", index))
       .group(group_name.clone())
+      .relative()
       .flex()
-      .flex_row()
       .items_center()
-      .gap(px(8.))
-      .px(px(10.))
-      .h(px(32.))
+      .justify_center()
+      .w(px(36.))
+      .h(px(36.))
       .rounded_md()
       .text_color(theme.foreground)
       .when(is_active, |this| {
@@ -74,24 +76,37 @@ impl WorkspaceSidebar {
           this.handle_select(index, cx);
         }),
       )
-      .child(Icon::new(icon).with_size(px(16.)))
-      .child(div().flex_1().text_sm().child(name).overflow_x_hidden());
+      // 文字描述收到 hover 触发的 popover（tooltip）里。
+      .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
+      .child(Icon::new(icon).with_size(px(16.)));
 
     // 关闭按钮：始终保留至少一个 Workspace，因此仅在有多个时显示。
+    // 行内没有放置文字的空间，关闭按钮以角标形式悬浮在行的右上角，
     // 默认隐藏，鼠标悬停在该行时通过 group_hover 显示出来。
     if closeable {
-      row.child(
+      row = row.child(
         div()
           .id(("workspace-close", index))
-          .opacity(0.0)
-          .group_hover(group_name, |style| style.opacity(1.0))
+          .absolute()
+          .top(px(1.))
+          .right(px(1.))
           .flex()
           .items_center()
           .justify_center()
-          .w(px(18.))
-          .h(px(18.))
+          .w(px(14.))
+          .h(px(14.))
           .rounded_full()
-          .hover(|style| style.bg(theme.secondary_hover))
+          .border_1()
+          .border_color(theme.border)
+          .bg(theme.background)
+          .text_color(theme.foreground)
+          .opacity(0.0)
+          .group_hover(group_name, |style| style.opacity(1.0))
+          .hover(|style| {
+            style
+              .bg(theme.danger_hover)
+              .text_color(theme.danger_foreground)
+          })
           .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -99,11 +114,10 @@ impl WorkspaceSidebar {
               this.handle_close(index, cx);
             }),
           )
-          .child(Icon::new(IconName::Close).with_size(px(11.))),
-      )
-    } else {
-      row
+          .child(Icon::new(IconName::Close).with_size(px(9.))),
+      );
     }
+    row
   }
 }
 
@@ -146,12 +160,12 @@ impl Render for WorkspaceSidebar {
       .flex()
       .flex_col()
       .h_full()
-      .w(px(180.))
+      .w(px(48.))
       .flex_shrink_0()
       .bg(sidebar_bg)
       .border_r_1()
       .border_color(sidebar_border)
-      // 上方：Workspace 列表（可滚动）
+      // 上方：Workspace 图标列表（可滚动）
       .child(
         div()
           .id("workspace-list")
@@ -162,8 +176,9 @@ impl Render for WorkspaceSidebar {
             div()
               .flex()
               .flex_col()
+              .items_center()
               .gap_1()
-              .p(px(8.))
+              .p(px(6.))
               .children(row_elements),
           ),
       )
@@ -171,21 +186,16 @@ impl Render for WorkspaceSidebar {
       .child(
         div()
           .flex()
-          .flex_row()
           .items_center()
-          .px(px(8.))
-          .py(px(8.))
+          .justify_center()
+          .p(px(6.))
           .border_t_1()
           .border_color(sidebar_border)
           .child(
             Button::new("add-workspace")
               .ghost()
               .small()
-              .w_full()
-              .justify_start()
-              .gap(px(6.))
-              .child(Icon::new(IconName::Plus).small())
-              .child("Add Workspace")
+              .icon(Icon::new(IconName::Plus))
               .tooltip("Add a new workspace")
               .on_click(cx.listener(|this, _, window, cx| {
                 this.handle_add(window, cx);
