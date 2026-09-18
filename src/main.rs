@@ -41,6 +41,18 @@ fn main() {
       KeyBinding::new("cmd-w", ClosePane, Some("Pane")),
     ]);
 
+    // Debug 构建下，最后一个窗口关闭后直接退出进程，
+    // 避免 `cargo run` 关窗后进程仍驻留后台。
+    #[cfg(debug_assertions)]
+    {
+      cx.on_window_closed(|cx| {
+        if cx.windows().is_empty() {
+          cx.quit();
+        }
+      })
+      .detach();
+    }
+
     let catus_app = cx.new(CatusApp::new);
 
     cx.open_window(
