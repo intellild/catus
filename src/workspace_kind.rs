@@ -12,8 +12,13 @@ use crate::terminal::PtyCommand;
 #[derive(Clone, Debug)]
 pub enum WorkspaceKind {
   Local,
-  LocalProgram { program: String, args: Vec<String> },
+  LocalProgram {
+    program: String,
+    args: Vec<String>,
+  },
   Ssh(String),
+  /// Explicit tmux control mode command, locally or through ssh.
+  Tmux(String),
 }
 
 impl WorkspaceKind {
@@ -39,6 +44,22 @@ impl WorkspaceKind {
     }
     let mut parts = trimmed.split_whitespace();
     let program = parts.next().expect("non-empty after trim");
+    let words: Vec<_> = trimmed.split_whitespace().collect();
+    let tmux = words.iter().position(|word| {
+      std::path::Path::new(word)
+        .file_name()
+        .is_some_and(|name| name == "tmux")
+    });
+    if (program == "ssh" || tmux == Some(0))
+      && tmux.is_some_and(|i| {
+        words[i + 1..]
+          .iter()
+          .any(|word| matches!(*word, "-C" | "-CC"))
+      })
+    {
+      // -CC disables PTY echo. Preserve the user's persisted spelling otherwise.
+      return Self::Tmux(trimmed.to_string());
+    }
     if program == "ssh" {
       Self::Ssh(trimmed.to_string())
     } else {
@@ -55,7 +76,7 @@ impl WorkspaceKind {
         .chain(args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" "),
-      Self::Ssh(cmd) => cmd.trim().to_string(),
+      Self::Ssh(cmd) | Self::Tmux(cmd) => cmd.trim().to_string(),
     }
   }
 
@@ -64,6 +85,7 @@ impl WorkspaceKind {
     match self {
       WorkspaceKind::Local | WorkspaceKind::LocalProgram { .. } => IconName::SquareTerminal,
       WorkspaceKind::Ssh(_) => IconName::Globe,
+      WorkspaceKind::Tmux(_) => IconName::SquareTerminal,
     }
   }
 
@@ -72,7 +94,7 @@ impl WorkspaceKind {
     match self {
       WorkspaceKind::Local => None,
       WorkspaceKind::LocalProgram { .. } => None,
-      WorkspaceKind::Ssh(cmd) => Some(cmd.as_str()),
+      WorkspaceKind::Ssh(cmd) | WorkspaceKind::Tmux(cmd) => Some(cmd.as_str()),
     }
   }
 
@@ -83,7 +105,9 @@ impl WorkspaceKind {
       WorkspaceKind::LocalProgram { program, args } => {
         PtyCommand::program(program.clone(), args.clone())
       }
-      WorkspaceKind::Ssh(cmd) => PtyCommand::from_command_line(Some(cmd.as_str())),
+      WorkspaceKind::Ssh(cmd) | WorkspaceKind::Tmux(cmd) => {
+        PtyCommand::from_command_line(Some(cmd.as_str()))
+      }
     }
   }
 
@@ -98,6 +122,7 @@ impl WorkspaceKind {
       WorkspaceKind::Local => "Local".into(),
       // 自定义程序 workspace 展示完整命令行。
       WorkspaceKind::LocalProgram { .. } => self.to_command_line().into(),
+      WorkspaceKind::Tmux(cmd) => cmd.clone().into(),
       WorkspaceKind::Ssh(cmd) => {
         // 去掉首尾空白后展示命令本身（例如 "ssh user@host"），
         // 若用户只填了 "ssh" 则退化为 "SSH"。
@@ -141,6 +166,28 @@ fn parse_local_pty_args(args_json: Option<&str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn explicit_control_commands_round_trip_without_changing_normal_tmux() {
+    for command in [
+      "tmux -CC new-session -A -s work",
+      "tmux -L test -C attach",
+      "ssh host tmux -CC attach",
+      "/opt/homebrew/bin/tmux -CC",
+    ] {
+      let kind = WorkspaceKind::from_command_line(command);
+      assert!(matches!(kind, WorkspaceKind::Tmux(_)));
+      assert_eq!(kind.to_command_line(), command);
+    }
+    assert!(matches!(
+      WorkspaceKind::from_command_line("tmux attach"),
+      WorkspaceKind::LocalProgram { .. }
+    ));
+    assert!(matches!(
+      WorkspaceKind::from_command_line("ssh -C host"),
+      WorkspaceKind::Ssh(_)
+    ));
+  }
 
   #[test]
   fn local_command_is_none() {

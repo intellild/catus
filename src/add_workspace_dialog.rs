@@ -51,7 +51,7 @@ pub fn open_add_workspace_dialog(app: Entity<CatusApp>, window: &mut Window, cx:
               div()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child("Empty command starts the default shell."),
+                .child("Empty command starts the default shell. Use tmux -CC new-session -A -s work for tmux tabs and panes."),
             ),
         )
         .button_props(

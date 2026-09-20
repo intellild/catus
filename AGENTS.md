@@ -6,6 +6,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 - 多 Workspace：左侧侧边栏列出所有 Workspace，可切换/关闭/新增。
 - Workspace 可以是本地的（系统默认 shell）或 SSH（启动 `ssh` 等本地进程作为命令）。
+- tmux control mode workspace：显式 `tmux -CC` 命令将服务端 window / pane 映射为原生 Tab / Pane。
 - 每个 Workspace 内多 Tab、Pane 水平/垂直分割。
 - 本地 PTY 终端会话。
 - 终端输入、滚动、选择、复制和粘贴。
@@ -24,8 +25,10 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - `src/main.rs`: 应用初始化、主题设置、全局 key binding。
 - `src/app.rs`: 应用级状态，持有多个 `Workspace` 与激活索引；启动时从 TOML 配置创建 workspace 列表，增删时写回。
 - `src/config.rs`: TOML 配置（`~/.config/catus/config.toml`）读写；文件缺失时写默认配置，解析失败不覆盖原文件。
-- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `LocalProgram` / `Ssh`），决定 workspace 的图标、展示名和 PTY 启动命令；`from_command_line` / `to_command_line` 负责与配置、对话框的命令字符串互转。
-- `src/workspace.rs`: 单个 `Workspace`：Tab 管理和终端实体创建，按 `kind.command()` 创建 PTY。
+- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `LocalProgram` / `Ssh` / `Tmux`），决定 workspace 的图标、展示名和 PTY 启动命令；`from_command_line` / `to_command_line` 负责与配置、对话框的命令字符串互转。
+- `src/workspace.rs`: UI 使用的 Workspace facade，持有 `Box<dyn WorkspaceDelegate>`；通过方法读取 tabs 与活动 tab。
+- `src/workspace/delegate.rs` / `tmux.rs`: 本地与 tmux delegate；tmux 的 Tab / Pane 增删以服务器快照为准，关闭 workspace 只断开客户端。
+- `src/tmux/`: control mode 协议、布局解析、命令队列与 PanePty。用法与限制见 `docs/tmux-control-mode.md`。
 - `src/sidebar/mod.rs`: 左侧 `WorkspaceSidebar`，列出 workspace 图标、切换/关闭/新增。
 - `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，编辑启动命令（默认当前用户默认 shell）。
 - `src/main_view.rs`: 主视图，组合侧边栏与当前 workspace 的 title bar + pane 区，render 时从 `App` 解析激活的 workspace。
@@ -45,7 +48,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 - 保持“生产/消费分离”：后台 PTY reader 只推进 alacritty 状态；可见 UI 帧才提取可渲染数据。
 - `LocalPty` 使用 `std::thread::spawn` 处理阻塞读写，通过 `async_channel` 与 UI/任务侧通信。命令字符串按空白拆分为程序 + 参数后传给 `CommandBuilder`。子进程在 `Drop` 时同步 kill。
 - `Pty` trait 使用 `&self` 的 async 方法，内部可变性由具体实现负责。资源清理由具体实现的 `Drop` 负责。
-- `Workspace::create_terminal_view` 是创建终端的唯一入口，用 `kind.command()` 作为 `LocalPty::new` 的命令；`None` 表示系统默认 shell，`Some("ssh user@host")` 用于 SSH workspace。命令字符串会被拆分为程序名和参数。
+- 终端实体统一通过 `Workspace::create_terminal_view_with_pty` 创建；本地 delegate 传入 `LocalPty`，tmux delegate 传入 `PanePty`。tmux pane 不启动额外 shell，也不重复回复 tmux 已处理的终端查询。
 - `MainView` 在 render 时从 `App::active_workspace()` 解析当前 workspace，因此切换 workspace 不需要重建 title bar / pane。
 - 响应式链路：`Terminal` notify → `TerminalView` observe → `TerminalViewEvent` → `Workspace` subscribe → `App` observe workspace → `MainView` / `WorkspaceSidebar` / `TitleBarTabs` observe App。`App` 和 `Workspace` 的变更方法都调用 `cx.notify()`。
 

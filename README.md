@@ -7,6 +7,7 @@ A local terminal client built with [Rust](https://www.rust-lang.org/) and [GPUI]
 - **Multiple workspaces** — a left sidebar lists all workspaces; switch, close, or add new ones.
   - **Local** workspaces launch the system default shell.
   - **SSH** workspaces launch a local `ssh` process (e.g. `ssh user@host`) as the command — they reuse the local PTY, so no remote PTY / SFTP runtime is involved.
+  - **tmux** workspaces use control mode to show server windows and panes natively. Enter `tmux -CC new-session -A -s work` in Add Workspace; see [tmux support](docs/tmux-control-mode.md) for SSH, lifecycle and current limits.
 - Multiple tabs and horizontal/vertical pane splitting per workspace.
 - Terminal input, scrolling, selection, copy, and paste.
 

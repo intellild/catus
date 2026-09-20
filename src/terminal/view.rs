@@ -34,6 +34,10 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+  #[cfg(test)]
+  pub(crate) fn terminal_for_test(&self) -> Entity<Terminal> {
+    self.terminal.clone()
+  }
   /// 创建新的 TerminalView，使用已存在的 Terminal Entity
   pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
     // Terminal notify → 重新渲染

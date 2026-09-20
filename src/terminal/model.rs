@@ -229,7 +229,7 @@ impl Terminal {
     default_title: impl Into<String>,
     cx: &mut Context<Self>,
   ) -> Result<Self> {
-    let initial_size = TerminalSize::default_size();
+    let initial_size = pty.initial_size();
     let term_dimensions = TermDimensions::from(initial_size);
 
     let term_config = Config {
@@ -315,7 +315,9 @@ impl Terminal {
               .read_with(cx, |terminal, _| terminal.pty.clone())
               .ok()
               .flatten();
-            if let Some(pty) = pty {
+            if let Some(pty) = pty
+              && pty.needs_terminal_responses()
+            {
               let _ = pty.write(data.into_bytes()).await;
             }
           }

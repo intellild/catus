@@ -13,8 +13,11 @@ pub struct PaneGroup {
   root: PaneNode,
   active_leaf_id: Option<PaneLeafId>,
   next_leaf_id: u64,
+  focus_active_on_render: bool,
   workspace: WeakEntity<Workspace>,
   focus_handle: FocusHandle,
+  server_layout: Option<std::collections::HashMap<PaneLeafId, (u16, u16)>>,
+  server_subscriptions: Vec<Subscription>,
 }
 
 impl PaneGroup {
@@ -29,9 +32,68 @@ impl PaneGroup {
       root: PaneNode::new_leaf(leaf_id, PaneView::Terminal(initial_view)),
       active_leaf_id: Some(leaf_id),
       next_leaf_id: 2,
+      focus_active_on_render: false,
       workspace,
       focus_handle: cx.focus_handle(),
+      server_layout: None,
+      server_subscriptions: Vec::new(),
     }
+  }
+
+  pub(crate) fn from_server_layout(
+    workspace: WeakEntity<Workspace>,
+    root: PaneNode,
+    active: PaneLeafId,
+    layout: std::collections::HashMap<PaneLeafId, (u16, u16)>,
+    cx: &mut Context<Self>,
+  ) -> Self {
+    let mut group = Self {
+      root: root.clone(),
+      active_leaf_id: Some(active),
+      next_leaf_id: 1,
+      focus_active_on_render: true,
+      workspace,
+      focus_handle: cx.focus_handle(),
+      server_layout: None,
+      server_subscriptions: Vec::new(),
+    };
+    group.set_server_layout(root, active, layout, cx);
+    group
+  }
+  pub(crate) fn set_server_layout(
+    &mut self,
+    root: PaneNode,
+    active: PaneLeafId,
+    layout: std::collections::HashMap<PaneLeafId, (u16, u16)>,
+    cx: &mut Context<Self>,
+  ) {
+    self.server_subscriptions.clear();
+    fn subscribe(
+      node: &PaneNode,
+      subscriptions: &mut Vec<Subscription>,
+      cx: &mut Context<PaneGroup>,
+    ) {
+      match node {
+        PaneNode::Leaf {
+          view: PaneView::Terminal(view),
+          ..
+        } => subscriptions.push(cx.subscribe(view, |this, view, event, cx| match event {
+          TerminalViewEvent::Focused => this.activate_leaf_by_view(&view, cx),
+          _ => cx.notify(),
+        })),
+        PaneNode::Split { children, .. } => {
+          for child in children {
+            subscribe(child, subscriptions, cx);
+          }
+        }
+      }
+    }
+    subscribe(&root, &mut self.server_subscriptions, cx);
+    self.root = root;
+    self.server_layout = Some(layout);
+    self.focus_active_on_render |= self.active_leaf_id != Some(active);
+    self.active_leaf_id = Some(active);
+    cx.notify();
   }
 
   /// 订阅 TerminalView 事件：标题变更时重新渲染，子进程退出时自动关闭对应 pane。
@@ -53,19 +115,25 @@ impl PaneGroup {
     .detach();
   }
 
-  fn create_terminal_view(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
+  fn create_terminal_view(
+    &mut self,
+    direction: SplitDirection,
+    cx: &mut Context<Self>,
+  ) -> Option<Entity<TerminalView>> {
+    let active = self.active_leaf_id?;
     let result = match self
       .workspace
-      .update(cx, |ws, cx| Workspace::create_terminal_view(cx, &ws.kind))
+      .update(cx, |ws, cx| ws.split_pane(active, direction, cx))
     {
       Ok(result) => result,
       Err(_) => return None,
     };
     match result {
-      Ok(view) => {
+      Ok(Some(view)) => {
         Self::subscribe_to_view(cx, &view);
         Some(view)
       }
+      Ok(None) => None,
       Err(e) => {
         eprintln!("Failed to create terminal: {}", e);
         None
@@ -77,7 +145,7 @@ impl PaneGroup {
     let Some(active_id) = self.active_leaf_id else {
       return;
     };
-    let Some(new_view) = self.create_terminal_view(cx) else {
+    let Some(new_view) = self.create_terminal_view(direction, cx) else {
       return;
     };
     let new_id = PaneLeafId(self.next_leaf_id);
@@ -91,6 +159,13 @@ impl PaneGroup {
 
   fn close_active_pane(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
     let active_id = self.active_leaf_id?;
+    if !self
+      .workspace
+      .update(cx, |ws, cx| ws.close_pane(active_id, cx))
+      .unwrap_or(false)
+    {
+      return None;
+    }
     if self.root.leaf_count() <= 1 {
       return None;
     }
@@ -113,12 +188,18 @@ impl PaneGroup {
     };
     if self.active_leaf_id != Some(leaf_id) {
       self.active_leaf_id = Some(leaf_id);
+      let _ = self
+        .workspace
+        .update(cx, |ws, cx| ws.focus_pane(leaf_id, cx));
       cx.notify();
     }
   }
 
   /// 按视图关闭对应的叶子节点。用于子进程退出时自动清理。
   fn close_leaf_by_view(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+    if self.server_layout.is_some() {
+      return;
+    }
     let target = PaneView::Terminal(view.clone());
     let Some(leaf_id) = self.root.find_leaf_id_by_view(&target) else {
       return;
@@ -159,7 +240,12 @@ impl PaneGroup {
     }
   }
 
-  fn render_node(node: &PaneNode, has_siblings: bool, cx: &App) -> AnyElement {
+  fn render_node(
+    node: &PaneNode,
+    has_siblings: bool,
+    layout: Option<&std::collections::HashMap<PaneLeafId, (u16, u16)>>,
+    cx: &App,
+  ) -> AnyElement {
     match node {
       PaneNode::Leaf { view, .. } => {
         let terminal_el = match view {
@@ -212,10 +298,45 @@ impl PaneGroup {
           .when(is_h, |d: Div| d.flex_row())
           .when(!is_h, |d: Div| d.flex_col())
           .children(children.iter().enumerate().flat_map(|(i, child)| {
-            let child_el = Self::render_node(child, true, cx);
+            fn dimensions(
+              node: &PaneNode,
+              geometry: &std::collections::HashMap<PaneLeafId, (u16, u16)>,
+            ) -> (u32, u32) {
+              match node {
+                PaneNode::Leaf { id, .. } => geometry
+                  .get(id)
+                  .map(|(w, h)| (u32::from(*w), u32::from(*h)))
+                  .unwrap_or((1, 1)),
+                PaneNode::Split {
+                  direction,
+                  children,
+                } => children
+                  .iter()
+                  .map(|c| dimensions(c, geometry))
+                  .reduce(|(w, h), (cw, ch)| {
+                    if *direction == SplitDirection::Horizontal {
+                      (w + cw + 1, h.max(ch))
+                    } else {
+                      (w.max(cw), h + ch + 1)
+                    }
+                  })
+                  .unwrap_or((1, 1)),
+              }
+            }
+            let weight = layout
+              .map(|l| {
+                let (w, h) = dimensions(child, l);
+                if is_h { w } else { h }
+              })
+              .unwrap_or(1) as f32;
+            let child_el = Self::render_node(child, true, layout, cx);
             let mut elements: Vec<AnyElement> = vec![
               div()
                 .flex_1()
+                .map(|mut d| {
+                  d.style().flex_grow = Some(weight);
+                  d
+                })
                 .min_w(px(100.))
                 .min_h(px(50.))
                 .overflow_hidden()
@@ -310,7 +431,14 @@ impl PaneGroup {
 }
 
 impl Render for PaneGroup {
-  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    if std::mem::take(&mut self.focus_active_on_render)
+      && let Some(PaneView::Terminal(view)) = self
+        .active_leaf_id
+        .and_then(|id| self.root.find_view_by_id(id))
+    {
+      view.read(cx).focus(window);
+    }
     div()
       .id("pane-group")
       .key_context("Pane")
@@ -322,6 +450,7 @@ impl Render for PaneGroup {
       .child(Self::render_node(
         &self.root,
         self.root.leaf_count() > 1,
+        self.server_layout.as_ref(),
         cx,
       ))
   }

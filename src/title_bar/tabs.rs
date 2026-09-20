@@ -39,7 +39,7 @@ impl TitleBarTabs {
       .app
       .read(cx)
       .active_workspace()
-      .and_then(|ws| ws.read(cx).tabs.get(index))
+      .and_then(|ws| ws.read(cx).tabs().get(index))
       .map(|tab| tab.id);
     if let Some(id) = id
       && self
@@ -55,7 +55,7 @@ impl TitleBarTabs {
       .app
       .read(cx)
       .active_workspace()
-      .and_then(|ws| ws.read(cx).tabs.get(index))
+      .and_then(|ws| ws.read(cx).tabs().get(index))
       .map(|tab| tab.id);
     if let Some(id) = id
       && self
@@ -84,7 +84,7 @@ impl Render for TitleBarTabs {
     let (tabs_len, active_index) = match active_workspace {
       Some(ws) => {
         let ws = ws.read(cx);
-        (ws.tabs.len(), ws.active_index().unwrap_or(0))
+        (ws.tabs().len(), ws.active_index().unwrap_or(0))
       }
       None => (0, 0),
     };
@@ -102,7 +102,7 @@ impl Render for TitleBarTabs {
           .children((0..tabs_len).map(|ix| {
             // 当前 workspace 的每个 tab 渲染一个 Tab。
             let title = active_workspace
-              .and_then(|ws| ws.read(cx).tabs.get(ix))
+              .and_then(|ws| ws.read(cx).tabs().get(ix))
               .map(|tab| truncate_title(&tab.title(cx), MAX_TAB_TITLE_CHARS))
               .unwrap_or_else(|| "Terminal".to_string());
             let title: SharedString = title.into();

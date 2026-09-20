@@ -43,7 +43,7 @@ impl App {
     for entry in &config.workspaces {
       let kind = WorkspaceKind::from_command_line(&entry.command);
       let workspace = spawn_workspace(kind, cx);
-      if workspace.read(cx).tabs.is_empty() {
+      if workspace.read(cx).tabs().is_empty() && !workspace.read(cx).is_connecting() {
         warn!(
           target: "catus",
           "skipping workspace command {:?}: no terminal created",
@@ -98,7 +98,7 @@ impl App {
     let workspace = spawn_workspace(kind, cx);
 
     // 终端创建失败时拒绝添加空 workspace
-    if workspace.read(cx).tabs.is_empty() {
+    if workspace.read(cx).tabs().is_empty() && !workspace.read(cx).is_connecting() {
       return Err("Failed to create terminal for workspace".to_string());
     }
 

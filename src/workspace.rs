@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{AppContext, Entity, SharedString};
 use gpui_component::IconName;
-use tracing::info;
 
 use crate::pane::PaneGroup;
 use crate::terminal::title::normalize_title;
@@ -23,11 +22,11 @@ pub fn generate_tab_id() -> TabId {
 pub struct TabItem {
   pub id: TabId,
   pub pane_group: Entity<PaneGroup>,
-  title_override: Option<String>,
+  pub(crate) title_override: Option<String>,
 }
 
 impl TabItem {
-  fn new(pane_group: Entity<PaneGroup>) -> Self {
+  pub(crate) fn new(pane_group: Entity<PaneGroup>) -> Self {
     Self {
       id: generate_tab_id(),
       pane_group,
@@ -45,85 +44,65 @@ impl TabItem {
   }
 }
 
+mod delegate;
+mod tmux;
+use crate::pane::pane_node::{PaneLeafId, SplitDirection};
+pub use delegate::{LocalWorkspaceDelegate, WorkspaceDelegate, WorkspaceState};
+pub use tmux::TmuxWorkspaceDelegate;
+
+/// Stable UI facade; each backend owns its tabs, selection and lifecycle.
 pub struct Workspace {
   pub kind: WorkspaceKind,
-  pub tabs: Vec<TabItem>,
-  pub active_tab_id: Option<TabId>,
+  delegate: Box<dyn WorkspaceDelegate>,
 }
-
 impl Workspace {
   pub fn new(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
-    match Self::make_tab(cx, &kind) {
-      Ok(tab) => {
-        let active_tab_id = Some(tab.id);
-        Self {
-          kind,
-          tabs: vec![tab],
-          active_tab_id,
-        }
-      }
-      Err(e) => {
-        eprintln!("Failed to create default terminal: {}", e);
-        Self {
-          kind,
-          tabs: vec![],
-          active_tab_id: None,
-        }
-      }
-    }
+    let delegate: Box<dyn WorkspaceDelegate> = if let WorkspaceKind::Tmux(command) = &kind {
+      Box::new(TmuxWorkspaceDelegate::new(command, cx))
+    } else {
+      Box::new(LocalWorkspaceDelegate::new(kind.clone(), cx))
+    };
+    Self { kind, delegate }
   }
-
-  /// 侧边栏展示用的名称。
+  pub fn tabs(&self) -> &[TabItem] {
+    &self.delegate.state().tabs
+  }
+  pub fn active_tab_id(&self) -> Option<TabId> {
+    self.delegate.state().active_tab_id
+  }
+  pub fn status(&self) -> Option<&str> {
+    self.delegate.state().status.as_deref()
+  }
+  pub fn is_connecting(&self) -> bool {
+    self.delegate.state().connecting
+  }
   pub fn display_name(&self) -> SharedString {
     self.kind.display_name()
   }
-
-  /// 侧边栏展示用的图标。
   pub fn icon(&self) -> IconName {
     self.kind.icon()
   }
-
-  fn make_tab(cx: &mut gpui::Context<Self>, kind: &WorkspaceKind) -> Result<TabItem, String> {
-    let terminal_view = Self::create_terminal_view(cx, kind)?;
-    let workspace_handle = cx.entity().downgrade();
-    let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
-    Ok(TabItem::new(pane_group))
+  pub fn active_tab(&self) -> Option<&TabItem> {
+    self
+      .tabs()
+      .iter()
+      .find(|t| Some(t.id) == self.active_tab_id())
   }
-
-  pub fn add_tab(&mut self, tab: TabItem, cx: &mut gpui::Context<Self>) -> TabId {
-    let id = tab.id;
-    self.tabs.push(tab);
-    self.active_tab_id = Some(id);
-    info!(target: "catus", "added tab id {:?} (total {})", id, self.tabs.len());
-    cx.notify();
-    id
+  pub fn active_index(&self) -> Option<usize> {
+    self
+      .tabs()
+      .iter()
+      .position(|t| Some(t.id) == self.active_tab_id())
   }
-
+  pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> Result<(), String> {
+    self.delegate.add_terminal_tab(cx)
+  }
   pub fn close_tab(&mut self, id: TabId, cx: &mut gpui::Context<Self>) -> bool {
-    if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
-      self.tabs.remove(index);
-      if self.active_tab_id == Some(id) {
-        self.active_tab_id = self.tabs.get(index.saturating_sub(1)).map(|t| t.id);
-      }
-      info!(target: "catus", "closed tab id {:?} (remaining {})", id, self.tabs.len());
-      cx.notify();
-      return true;
-    }
-    false
+    self.delegate.close_tab(id, cx)
   }
-
   pub fn activate_tab(&mut self, id: TabId, cx: &mut gpui::Context<Self>) -> bool {
-    if self.tabs.iter().any(|t| t.id == id) {
-      self.active_tab_id = Some(id);
-      cx.notify();
-      true
-    } else {
-      false
-    }
+    self.delegate.activate_tab(id, cx)
   }
-
-  /// 设置显式 tab 标题。`None`、空字符串或纯空白会清除覆盖值，
-  /// 重新跟随活动 pane 的标题。
   #[allow(dead_code)]
   pub fn set_tab_title(
     &mut self,
@@ -131,42 +110,46 @@ impl Workspace {
     title: Option<String>,
     cx: &mut gpui::Context<Self>,
   ) -> bool {
-    let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
-      return false;
-    };
-    let title = title.as_deref().and_then(normalize_title);
-    if tab.title_override != title {
-      tab.title_override = title;
-      cx.notify();
-    }
-    true
-  }
-
-  pub fn active_tab(&self) -> Option<&TabItem> {
     self
-      .active_tab_id
-      .and_then(|id| self.tabs.iter().find(|t| t.id == id))
+      .delegate
+      .set_tab_title(id, title.as_deref().and_then(normalize_title), cx)
   }
-
-  pub fn active_index(&self) -> Option<usize> {
-    self
-      .active_tab_id
-      .and_then(|id| self.tabs.iter().position(|t| t.id == id))
+  pub(crate) fn split_pane(
+    &mut self,
+    pane: PaneLeafId,
+    direction: SplitDirection,
+    cx: &mut gpui::Context<Self>,
+  ) -> Result<Option<Entity<TerminalView>>, String> {
+    self.delegate.split_pane(pane, direction, cx)
   }
-
-  pub fn add_terminal_tab(&mut self, cx: &mut gpui::Context<Self>) -> Result<TabId, String> {
-    let tab = Self::make_tab(cx, &self.kind)?;
-    Ok(self.add_tab(tab, cx))
+  pub(crate) fn close_pane(&mut self, pane: PaneLeafId, cx: &mut gpui::Context<Self>) -> bool {
+    self.delegate.close_pane(pane, cx)
   }
-
-  /// 创建 Terminal + TerminalView 实体，并订阅 TerminalViewEvent。
-  ///
-  /// 当终端标题变更或子进程退出时，通过 `cx.notify()` 触发 Workspace
-  /// 重新渲染，进而通知 App → MainView / TitleBarTabs。
+  pub(crate) fn focus_pane(&mut self, pane: PaneLeafId, cx: &mut gpui::Context<Self>) {
+    self.delegate.focus_pane(pane, cx);
+  }
+  pub(crate) fn handle_tmux_event(
+    &mut self,
+    event: crate::tmux::client::ClientEvent,
+    cx: &mut gpui::Context<Self>,
+  ) {
+    self.delegate.handle_tmux_event(event, cx);
+  }
+  fn make_tab(cx: &mut gpui::Context<Self>, kind: &WorkspaceKind) -> Result<TabItem, String> {
+    let view = Self::create_terminal_view(cx, kind)?;
+    Ok(Self::tab_with_view(view, cx))
+  }
+  fn tab_with_view(view: Entity<TerminalView>, cx: &mut gpui::Context<Self>) -> TabItem {
+    let workspace = cx.entity().downgrade();
+    TabItem::new(cx.new(|cx| PaneGroup::new(workspace, view, cx)))
+  }
   pub fn create_terminal_view(
     cx: &mut gpui::Context<Self>,
     kind: &WorkspaceKind,
   ) -> Result<Entity<TerminalView>, String> {
+    if matches!(kind, WorkspaceKind::Tmux(_)) {
+      return Err("tmux panes must be created by the server".into());
+    }
     let size = TerminalSize::default_size();
     let pty = match kind {
       WorkspaceKind::LocalProgram { .. } => LocalPty::new_with_command(size, kind.pty_command()),
@@ -206,95 +189,43 @@ impl Workspace {
 
 #[cfg(test)]
 impl Workspace {
-  /// 用 FakePty 创建一个 Workspace，避免测试中启动真实 shell。
   pub(crate) fn new_with_fake_pty(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
-    match Self::make_tab_with_fake_pty(cx, &kind) {
-      Ok(tab) => {
-        let active_tab_id = Some(tab.id);
-        Self {
-          kind,
-          tabs: vec![tab],
-          active_tab_id,
-        }
-      }
-      Err(e) => {
-        eprintln!("Failed to create default terminal: {}", e);
-        Self {
-          kind,
-          tabs: vec![],
-          active_tab_id: None,
-        }
-      }
-    }
+    Self::new_with_pty(kind, Arc::new(crate::terminal::FakePty::new()), cx)
   }
-
-  /// 用给定的 PTY 创建初始 tab，便于测试向终端注入输出（如 OSC 标题序列）。
   pub(crate) fn new_with_pty(
     kind: WorkspaceKind,
     pty: Arc<dyn crate::terminal::Pty>,
     cx: &mut gpui::Context<Self>,
   ) -> Self {
-    match Self::make_tab_with_pty(cx, &kind, pty) {
-      Ok(tab) => {
-        let active_tab_id = Some(tab.id);
-        Self {
-          kind,
-          tabs: vec![tab],
-          active_tab_id,
-        }
-      }
-      Err(e) => {
-        eprintln!("Failed to create default terminal: {}", e);
-        Self {
-          kind,
-          tabs: vec![],
-          active_tab_id: None,
-        }
-      }
-    }
+    let view = Self::create_terminal_view_with_pty(cx, pty, kind.default_terminal_title()).unwrap();
+    let tab = Self::tab_with_view(view, cx);
+    let delegate = Box::new(LocalWorkspaceDelegate::with_tab(kind.clone(), tab));
+    Self { kind, delegate }
   }
-
-  fn make_tab_with_fake_pty(
-    cx: &mut gpui::Context<Self>,
-    kind: &WorkspaceKind,
-  ) -> Result<TabItem, String> {
-    let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
-    Self::make_tab_with_pty(cx, kind, pty)
+  fn add_tab(&mut self, tab: TabItem, cx: &mut gpui::Context<Self>) -> TabId {
+    let id = tab.id;
+    let state = self.delegate.state_mut();
+    state.tabs.push(tab);
+    state.active_tab_id = Some(id);
+    cx.notify();
+    id
   }
-
-  /// 用给定的 PTY 创建初始 tab，供需要向终端注入数据的测试使用。
-  fn make_tab_with_pty(
-    cx: &mut gpui::Context<Self>,
-    kind: &WorkspaceKind,
-    pty: Arc<dyn crate::terminal::Pty>,
-  ) -> Result<TabItem, String> {
-    let terminal_view =
-      Self::create_terminal_view_with_pty(cx, pty, kind.default_terminal_title())?;
-    let workspace_handle = cx.entity().downgrade();
-    let pane_group = cx.new(|cx| PaneGroup::new(workspace_handle, terminal_view, cx));
-    Ok(TabItem::new(pane_group))
-  }
-
-  /// 测试辅助：使用 FakePty 添加新 tab，避免启动真实 shell。
   pub(crate) fn add_terminal_tab_with_fake_pty(
     &mut self,
     cx: &mut gpui::Context<Self>,
   ) -> Result<TabId, String> {
-    let pty = Arc::new(crate::terminal::FakePty::new()) as Arc<dyn crate::terminal::Pty>;
-    self.add_terminal_tab_with_pty(cx, pty)
+    self.add_terminal_tab_with_pty(cx, Arc::new(crate::terminal::FakePty::new()))
   }
-
-  /// 测试辅助：使用给定的 PTY 添加新 tab。
   pub(crate) fn add_terminal_tab_with_pty(
     &mut self,
     cx: &mut gpui::Context<Self>,
     pty: Arc<dyn crate::terminal::Pty>,
   ) -> Result<TabId, String> {
-    let tab = Self::make_tab_with_pty(cx, &self.kind, pty)?;
+    let view = Self::create_terminal_view_with_pty(cx, pty, self.kind.default_terminal_title())?;
+    let tab = Self::tab_with_view(view, cx);
     Ok(self.add_tab(tab, cx))
   }
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -310,7 +241,7 @@ mod tests {
   #[gpui::test]
   fn new_workspace_has_single_active_tab(cx: &mut TestAppContext) {
     let ws = make_workspace(cx, WorkspaceKind::Local);
-    let (tabs, active) = ws.read_with(cx, |w, _| (w.tabs.len(), w.active_tab_id));
+    let (tabs, active) = ws.read_with(cx, |w, _| (w.tabs().len(), w.active_tab_id()));
     assert_eq!(tabs, 1);
     assert!(active.is_some());
   }
@@ -319,7 +250,7 @@ mod tests {
   fn active_tab_and_index_are_consistent(cx: &mut TestAppContext) {
     let ws = make_workspace(cx, WorkspaceKind::Local);
     ws.update(cx, |w, cx| {
-      let id = w.active_tab_id.expect("has active tab");
+      let id = w.active_tab_id().expect("has active tab");
       assert_eq!(w.active_tab().map(|t| t.id), Some(id));
       assert_eq!(w.active_index(), Some(0));
       let _ = cx;
@@ -330,10 +261,10 @@ mod tests {
   fn activate_tab_returns_false_for_unknown(cx: &mut TestAppContext) {
     let ws = make_workspace(cx, WorkspaceKind::Local);
     ws.update(cx, |w, cx| {
-      let original = w.active_tab_id;
+      let original = w.active_tab_id();
       let ok = w.activate_tab(TabId(9999), cx);
       assert!(!ok);
-      assert_eq!(w.active_tab_id, original);
+      assert_eq!(w.active_tab_id(), original);
     });
   }
 
@@ -343,7 +274,7 @@ mod tests {
     // 预置两个额外的 tab：直接构造 TabItem 并添加，避免再次创建终端
     ws.update(cx, |w, cx| {
       // 借用现有 tab 的 pane_group 作为占位，仅用于测试 close 索引逻辑
-      let placeholder_pane = w.tabs[0].pane_group.clone();
+      let placeholder_pane = w.tabs()[0].pane_group.clone();
       let tab1 = TabItem::new(placeholder_pane.clone());
       let tab2 = TabItem::new(placeholder_pane);
       w.add_tab(tab1, cx);
@@ -352,11 +283,11 @@ mod tests {
 
     ws.update(cx, |w, cx| {
       // 现在有 3 个 tab，激活的是最后一个（tab2）
-      let active_id = w.active_tab_id.expect("active");
+      let active_id = w.active_tab_id().expect("active");
       // 关闭激活的 tab，应当回退到上一个
       assert!(w.close_tab(active_id, cx));
-      assert_eq!(w.tabs.len(), 2);
-      assert!(w.active_tab_id.is_some());
+      assert_eq!(w.tabs().len(), 2);
+      assert!(w.active_tab_id().is_some());
     });
   }
 
@@ -365,7 +296,7 @@ mod tests {
     let ws = make_workspace(cx, WorkspaceKind::Local);
     ws.update(cx, |w, cx| {
       assert!(!w.close_tab(TabId(9999), cx));
-      assert_eq!(w.tabs.len(), 1);
+      assert_eq!(w.tabs().len(), 1);
     });
   }
 
@@ -462,7 +393,7 @@ mod tests {
         cx,
       )
     });
-    let tab_id = ws.read_with(cx, |workspace, _| workspace.active_tab_id.unwrap());
+    let tab_id = ws.read_with(cx, |workspace, _| workspace.active_tab_id().unwrap());
 
     fake.push_bytes("\x1b]2;Application\x07").unwrap();
     crate::terminal::flush_pty_output(cx);
@@ -507,9 +438,9 @@ mod tests {
     let ws = make_workspace(cx, WorkspaceKind::Local);
 
     // 初始状态：1 个 tab
-    let initial_count = ws.read_with(cx, |w, _| w.tabs.len());
+    let initial_count = ws.read_with(cx, |w, _| w.tabs().len());
     assert_eq!(initial_count, 1);
-    let initial_active = ws.read_with(cx, |w, _| w.active_tab_id);
+    let initial_active = ws.read_with(cx, |w, _| w.active_tab_id());
     assert!(initial_active.is_some());
 
     // 模拟点击 + 按钮
@@ -519,15 +450,15 @@ mod tests {
     });
 
     // 添加后：2 个 tab
-    let count_after = ws.read_with(cx, |w, _| w.tabs.len());
+    let count_after = ws.read_with(cx, |w, _| w.tabs().len());
     assert_eq!(count_after, 2, "should have 2 tabs after adding one");
 
     // 新 tab 应该是激活的
-    let active_after = ws.read_with(cx, |w, _| w.active_tab_id);
+    let active_after = ws.read_with(cx, |w, _| w.active_tab_id());
     assert_eq!(active_after, Some(new_tab_id), "new tab should be active");
 
     // 新 tab 应该存在于 tabs 列表中
-    let exists = ws.read_with(cx, |w, _| w.tabs.iter().any(|t| t.id == new_tab_id));
+    let exists = ws.read_with(cx, |w, _| w.tabs().iter().any(|t| t.id == new_tab_id));
     assert!(exists, "new tab should exist in tabs list");
   }
 
@@ -537,7 +468,7 @@ mod tests {
     let ws = make_workspace(cx, WorkspaceKind::Local);
 
     // 初始状态：1 个 tab
-    assert_eq!(ws.read_with(cx, |w, _| w.tabs.len()), 1);
+    assert_eq!(ws.read_with(cx, |w, _| w.tabs().len()), 1);
 
     // 添加 3 个新 tab
     let id1 = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
@@ -545,14 +476,14 @@ mod tests {
     let id3 = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
 
     // 应该有 4 个 tab
-    assert_eq!(ws.read_with(cx, |w, _| w.tabs.len()), 4);
+    assert_eq!(ws.read_with(cx, |w, _| w.tabs().len()), 4);
 
     // 最后添加的 tab 应该是激活的
-    assert_eq!(ws.read_with(cx, |w, _| w.active_tab_id), Some(id3));
+    assert_eq!(ws.read_with(cx, |w, _| w.active_tab_id()), Some(id3));
 
     // 所有 tab id 都应该不同
     ws.read_with(cx, |w, _| {
-      let ids: Vec<_> = w.tabs.iter().map(|t| t.id).collect();
+      let ids: Vec<_> = w.tabs().iter().map(|t| t.id).collect();
       assert!(ids.contains(&id1));
       assert!(ids.contains(&id2));
       assert!(ids.contains(&id3));
@@ -564,13 +495,13 @@ mod tests {
   fn added_tabs_have_independent_pane_groups(cx: &mut TestAppContext) {
     let ws = make_workspace(cx, WorkspaceKind::Local);
 
-    let first_pane = ws.read_with(cx, |w, _| w.tabs[0].pane_group.clone());
+    let first_pane = ws.read_with(cx, |w, _| w.tabs()[0].pane_group.clone());
 
     let new_tab_id = ws.update(cx, |w, cx| w.add_terminal_tab_with_fake_pty(cx).unwrap());
 
     ws.read_with(cx, |w, _| {
       let new_tab = w
-        .tabs
+        .tabs()
         .iter()
         .find(|t| t.id == new_tab_id)
         .expect("new tab exists");

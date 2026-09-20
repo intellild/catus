@@ -166,7 +166,7 @@ impl Render for WorkspaceSidebar {
           SidebarRow {
             index,
             is_active: app.active_index == Some(index),
-            has_tabs: !ws.tabs.is_empty(),
+            has_tabs: !ws.tabs().is_empty(),
             name: ws.display_name(),
             icon: ws.icon(),
           }

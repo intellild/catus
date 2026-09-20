@@ -43,6 +43,13 @@ impl TerminalSize {
 /// 资源清理由具体实现的 `Drop` 负责关闭子进程和释放 PTY 资源。
 #[async_trait]
 pub trait Pty: Send + Sync {
+  /// Multiplexers already answer terminal queries on behalf of their panes.
+  fn needs_terminal_responses(&self) -> bool {
+    true
+  }
+  fn initial_size(&self) -> TerminalSize {
+    TerminalSize::default_size()
+  }
   /// 写入数据到 PTY
   ///
   /// # Arguments

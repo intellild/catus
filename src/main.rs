@@ -11,6 +11,7 @@ mod pane;
 mod sidebar;
 mod terminal;
 mod title_bar;
+mod tmux;
 mod workspace;
 mod workspace_kind;
 

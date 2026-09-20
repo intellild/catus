@@ -41,6 +41,10 @@ impl Render for MainView {
       .and_then(|ws| ws.read(cx).active_tab())
       .map(|tab| tab.pane_group.clone());
 
+    let status = active_workspace
+      .and_then(|ws| ws.read(cx).status())
+      .map(str::to_owned);
+
     div()
       .size_full()
       .flex()
@@ -48,6 +52,7 @@ impl Render for MainView {
       .bg(theme.background)
       .text_color(theme.foreground)
       .child(self.title_bar.clone())
+      .children(status.map(|text| div().px_2().py_1().text_sm().child(text)))
       .child(
         div()
           .flex_1()
@@ -58,7 +63,13 @@ impl Render for MainView {
           .child(self.sidebar.clone())
           // 右侧：当前 workspace 的 pane 区
           .child(div().flex_1().min_w_0().child(pane_group.map_or_else(
-            || div().size_full().child("No active workspace"),
+            || {
+              div().size_full().child(if active_workspace.is_some() {
+                "No terminal tabs"
+              } else {
+                "No active workspace"
+              })
+            },
             |pg| div().size_full().child(pg),
           ))),
       )
