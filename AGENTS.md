@@ -6,7 +6,7 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 - 多 Workspace：左侧侧边栏列出所有 Workspace，可切换/关闭/新增。
 - Workspace 可以是本地的（系统默认 shell）或 SSH（启动 `ssh` 等本地进程作为命令）。
-- tmux control mode workspace：显式 `tmux -CC` 命令将服务端 window / pane 映射为原生 Tab / Pane。
+- tmux control mode workspace：选择 tmux 类型并填写 control mode 命令，将服务端 window / pane 映射为原生 Tab / Pane。
 - 每个 Workspace 内多 Tab、Pane 水平/垂直分割。
 - 本地 PTY 终端会话。
 - 终端输入、滚动、选择、复制和粘贴。
@@ -24,13 +24,13 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 
 - `src/main.rs`: 应用初始化、主题设置、全局 key binding。
 - `src/app.rs`: 应用级状态，持有多个 `Workspace` 与激活索引；启动时从 TOML 配置创建 workspace 列表，增删时写回。
-- `src/config.rs`: TOML 配置（`~/.config/catus/config.toml`）读写；文件缺失时写默认配置，解析失败不覆盖原文件。
-- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `LocalProgram` / `Ssh` / `Tmux`），决定 workspace 的图标、展示名和 PTY 启动命令；`from_command_line` / `to_command_line` 负责与配置、对话框的命令字符串互转。
+- `src/config.rs`: TOML 配置（`~/.config/catus/config.toml`）读写，分别持久化 mode 和 command；旧配置缺失 mode 时兼容命令推断；文件缺失时写默认配置，解析失败不覆盖原文件。
+- `src/workspace_spec.rs`: `WorkspaceSpec` 同时持有独立的 `WorkspaceMode`（`Regular` / `Tmux`）与 `PtyCommand`；SSH 是命令，不是 backend。新建时按明确选择的 mode 路由 delegate。
 - `src/workspace.rs`: UI 使用的 Workspace facade，持有 `Box<dyn WorkspaceDelegate>`；通过方法读取 tabs 与活动 tab。
 - `src/workspace/delegate.rs` / `tmux.rs`: 本地与 tmux delegate；tmux 的 Tab / Pane 增删以服务器快照为准，关闭 workspace 只断开客户端。
 - `src/tmux/`: control mode 协议、布局解析、命令队列与 PanePty。用法与限制见 `docs/tmux-control-mode.md`。
 - `src/sidebar/mod.rs`: 左侧 `WorkspaceSidebar`，列出 workspace 图标、切换/关闭/新增。
-- `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，编辑启动命令（默认当前用户默认 shell）。
+- `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，选择常规 / tmux 类型并填写命令；常规类型的空命令启动默认 shell。
 - `src/main_view.rs`: 主视图，组合侧边栏与当前 workspace 的 title bar + pane 区，render 时从 `App` 解析激活的 workspace。
 - `src/pane/`: Pane tree、分割和关闭逻辑。
 - `src/terminal/model.rs`: `Terminal` 协调器，连接 PTY、alacritty 状态和渲染状态。

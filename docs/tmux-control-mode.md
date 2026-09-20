@@ -6,7 +6,8 @@ or per-command tmux subprocess is used.
 
 ## Connect
 
-In **Add Workspace**, enter one of these commands (tmux must be installed):
+In **Add Workspace**, select **tmux** under **Workspace Type**, then enter your
+command (tmux must be installed). For example:
 
 ```text
 tmux -CC new-session -A -s work
@@ -19,13 +20,20 @@ The same command can be saved in `~/.config/catus/config.toml`:
 
 ```toml
 [[workspaces]]
+mode = "tmux"
 command = "tmux -CC new-session -A -s work"
 ```
 
-An explicit `-C` or `-CC` selects the tmux delegate; `-C` is upgraded to `-CC`
-when launching on the PTY to disable echo. A regular `tmux attach` command still
-runs as an ordinary terminal. Starting tmux inside an existing shell does not
-convert that local workspace into a tmux workspace.
+Workspace type and command are independent. **Regular** uses Catus-owned tabs
+and panes; **tmux** uses the control mode client, including when your command is
+a custom wrapper script. Switching type does not change the command, and Catus
+does not append control flags. Use `-CC` when starting tmux on the PTY.
+
+An empty Regular command starts the default shell. A tmux command is required.
+Starting tmux inside an existing shell does not convert that workspace into a
+tmux workspace. Older configuration entries without `mode` retain their former
+command-based detection; saving writes an explicit mode. An explicitly selected
+`regular` mode always takes precedence over the command's contents.
 
 SSH needs a remote PTY (`-tt`) and authentication/host trust established outside
 Catus. The control workspace does not implement an interactive SSH login prompt.
@@ -65,8 +73,8 @@ and older tmux versions need separate environment-specific testing.
 ## Implementation
 
 ```text
-src/workspace_kind.rs
-  recognize explicit tmux control command
+src/workspace_spec.rs
+  hold independent mode and startup command
        ↓
 src/workspace.rs — Workspace
   stable UI facade holding Box<dyn WorkspaceDelegate>

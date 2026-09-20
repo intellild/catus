@@ -2,7 +2,7 @@ use super::{TabId, TabItem, Workspace};
 use crate::pane::pane_node::{PaneLeafId, SplitDirection};
 use crate::terminal::TerminalView;
 use crate::tmux::client::ClientEvent;
-use crate::workspace_kind::WorkspaceKind;
+use crate::workspace_spec::WorkspaceSpec;
 use gpui::{Context, Entity};
 
 #[derive(Default)]
@@ -41,15 +41,15 @@ pub trait WorkspaceDelegate {
 }
 
 pub struct LocalWorkspaceDelegate {
-  kind: WorkspaceKind,
+  spec: WorkspaceSpec,
   state: WorkspaceState,
 }
 impl LocalWorkspaceDelegate {
-  pub fn new(kind: WorkspaceKind, cx: &mut Context<Workspace>) -> Self {
-    match Workspace::make_tab(cx, &kind) {
-      Ok(tab) => Self::with_tab(kind, tab),
+  pub fn new(spec: WorkspaceSpec, cx: &mut Context<Workspace>) -> Self {
+    match Workspace::make_tab(cx, &spec) {
+      Ok(tab) => Self::with_tab(spec, tab),
       Err(error) => Self {
-        kind,
+        spec,
         state: WorkspaceState {
           status: Some(error),
           ..Default::default()
@@ -57,9 +57,9 @@ impl LocalWorkspaceDelegate {
       },
     }
   }
-  pub fn with_tab(kind: WorkspaceKind, tab: TabItem) -> Self {
+  pub fn with_tab(spec: WorkspaceSpec, tab: TabItem) -> Self {
     Self {
-      kind,
+      spec,
       state: WorkspaceState {
         active_tab_id: Some(tab.id),
         tabs: vec![tab],
@@ -77,7 +77,7 @@ impl WorkspaceDelegate for LocalWorkspaceDelegate {
     &mut self.state
   }
   fn add_terminal_tab(&mut self, cx: &mut Context<Workspace>) -> Result<(), String> {
-    let tab = Workspace::make_tab(cx, &self.kind)?;
+    let tab = Workspace::make_tab(cx, &self.spec)?;
     self.state.active_tab_id = Some(tab.id);
     self.state.tabs.push(tab);
     cx.notify();
@@ -121,7 +121,7 @@ impl WorkspaceDelegate for LocalWorkspaceDelegate {
     _: SplitDirection,
     cx: &mut Context<Workspace>,
   ) -> Result<Option<Entity<TerminalView>>, String> {
-    Workspace::create_terminal_view(cx, &self.kind).map(Some)
+    Workspace::create_terminal_view(cx, &self.spec).map(Some)
   }
   fn close_pane(&mut self, _: PaneLeafId, _: &mut Context<Workspace>) -> bool {
     true

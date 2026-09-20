@@ -8,7 +8,6 @@ pub(crate) mod title;
 pub mod view;
 
 // 重导出主要类型
-pub(crate) use local_pty::default_shell_program;
 pub use local_pty::{LocalPty, PtyCommand};
 pub use model::Terminal;
 pub use pty::{Pty, TerminalSize};

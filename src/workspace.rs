@@ -7,7 +7,7 @@ use gpui_component::IconName;
 use crate::pane::PaneGroup;
 use crate::terminal::title::normalize_title;
 use crate::terminal::{LocalPty, Terminal, TerminalSize, TerminalView, TerminalViewEvent};
-use crate::workspace_kind::WorkspaceKind;
+use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
 
 static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -52,17 +52,16 @@ pub use tmux::TmuxWorkspaceDelegate;
 
 /// Stable UI facade; each backend owns its tabs, selection and lifecycle.
 pub struct Workspace {
-  pub kind: WorkspaceKind,
+  pub spec: WorkspaceSpec,
   delegate: Box<dyn WorkspaceDelegate>,
 }
 impl Workspace {
-  pub fn new(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
-    let delegate: Box<dyn WorkspaceDelegate> = if let WorkspaceKind::Tmux(command) = &kind {
-      Box::new(TmuxWorkspaceDelegate::new(command, cx))
-    } else {
-      Box::new(LocalWorkspaceDelegate::new(kind.clone(), cx))
+  pub fn new(spec: WorkspaceSpec, cx: &mut gpui::Context<Self>) -> Self {
+    let delegate: Box<dyn WorkspaceDelegate> = match spec.mode {
+      WorkspaceMode::Tmux => Box::new(TmuxWorkspaceDelegate::new(&spec.command, cx)),
+      WorkspaceMode::Regular => Box::new(LocalWorkspaceDelegate::new(spec.clone(), cx)),
     };
-    Self { kind, delegate }
+    Self { spec, delegate }
   }
   pub fn tabs(&self) -> &[TabItem] {
     &self.delegate.state().tabs
@@ -77,10 +76,10 @@ impl Workspace {
     self.delegate.state().connecting
   }
   pub fn display_name(&self) -> SharedString {
-    self.kind.display_name()
+    self.spec.display_name()
   }
   pub fn icon(&self) -> IconName {
-    self.kind.icon()
+    self.spec.icon()
   }
   pub fn active_tab(&self) -> Option<&TabItem> {
     self
@@ -135,8 +134,8 @@ impl Workspace {
   ) {
     self.delegate.handle_tmux_event(event, cx);
   }
-  fn make_tab(cx: &mut gpui::Context<Self>, kind: &WorkspaceKind) -> Result<TabItem, String> {
-    let view = Self::create_terminal_view(cx, kind)?;
+  fn make_tab(cx: &mut gpui::Context<Self>, spec: &WorkspaceSpec) -> Result<TabItem, String> {
+    let view = Self::create_terminal_view(cx, spec)?;
     Ok(Self::tab_with_view(view, cx))
   }
   fn tab_with_view(view: Entity<TerminalView>, cx: &mut gpui::Context<Self>) -> TabItem {
@@ -145,18 +144,15 @@ impl Workspace {
   }
   pub fn create_terminal_view(
     cx: &mut gpui::Context<Self>,
-    kind: &WorkspaceKind,
+    spec: &WorkspaceSpec,
   ) -> Result<Entity<TerminalView>, String> {
-    if matches!(kind, WorkspaceKind::Tmux(_)) {
+    if spec.mode == WorkspaceMode::Tmux {
       return Err("tmux panes must be created by the server".into());
     }
     let size = TerminalSize::default_size();
-    let pty = match kind {
-      WorkspaceKind::LocalProgram { .. } => LocalPty::new_with_command(size, kind.pty_command()),
-      _ => LocalPty::new(size, kind.command()),
-    }
-    .map_err(|e| format!("Failed to create PTY: {}", e))?;
-    Self::create_terminal_view_with_pty(cx, Arc::new(pty), kind.default_terminal_title())
+    let pty = LocalPty::new_with_command(size, spec.command.clone())
+      .map_err(|e| format!("Failed to create PTY: {}", e))?;
+    Self::create_terminal_view_with_pty(cx, Arc::new(pty), spec.default_terminal_title())
   }
 
   /// 用给定的 PTY 创建 Terminal + TerminalView 实体，并订阅 TerminalViewEvent。
@@ -189,18 +185,18 @@ impl Workspace {
 
 #[cfg(test)]
 impl Workspace {
-  pub(crate) fn new_with_fake_pty(kind: WorkspaceKind, cx: &mut gpui::Context<Self>) -> Self {
-    Self::new_with_pty(kind, Arc::new(crate::terminal::FakePty::new()), cx)
+  pub(crate) fn new_with_fake_pty(spec: WorkspaceSpec, cx: &mut gpui::Context<Self>) -> Self {
+    Self::new_with_pty(spec, Arc::new(crate::terminal::FakePty::new()), cx)
   }
   pub(crate) fn new_with_pty(
-    kind: WorkspaceKind,
+    spec: WorkspaceSpec,
     pty: Arc<dyn crate::terminal::Pty>,
     cx: &mut gpui::Context<Self>,
   ) -> Self {
-    let view = Self::create_terminal_view_with_pty(cx, pty, kind.default_terminal_title()).unwrap();
+    let view = Self::create_terminal_view_with_pty(cx, pty, spec.default_terminal_title()).unwrap();
     let tab = Self::tab_with_view(view, cx);
-    let delegate = Box::new(LocalWorkspaceDelegate::with_tab(kind.clone(), tab));
-    Self { kind, delegate }
+    let delegate = Box::new(LocalWorkspaceDelegate::with_tab(spec.clone(), tab));
+    Self { spec, delegate }
   }
   fn add_tab(&mut self, tab: TabItem, cx: &mut gpui::Context<Self>) -> TabId {
     let id = tab.id;
@@ -221,7 +217,7 @@ impl Workspace {
     cx: &mut gpui::Context<Self>,
     pty: Arc<dyn crate::terminal::Pty>,
   ) -> Result<TabId, String> {
-    let view = Self::create_terminal_view_with_pty(cx, pty, self.kind.default_terminal_title())?;
+    let view = Self::create_terminal_view_with_pty(cx, pty, self.spec.default_terminal_title())?;
     let tab = Self::tab_with_view(view, cx);
     Ok(self.add_tab(tab, cx))
   }
@@ -229,18 +225,18 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
   use gpui::TestAppContext;
 
   /// 创建一个使用 FakePty 的 Workspace 实体。
-  fn make_workspace(cx: &mut TestAppContext, kind: WorkspaceKind) -> Entity<Workspace> {
+  fn make_workspace(cx: &mut TestAppContext, spec: WorkspaceSpec) -> Entity<Workspace> {
     use gpui::AppContext as _;
-    cx.new(|cx| Workspace::new_with_fake_pty(kind, cx))
+    cx.new(|cx| Workspace::new_with_fake_pty(spec, cx))
   }
 
   #[gpui::test]
   fn new_workspace_has_single_active_tab(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
     let (tabs, active) = ws.read_with(cx, |w, _| (w.tabs().len(), w.active_tab_id()));
     assert_eq!(tabs, 1);
     assert!(active.is_some());
@@ -248,7 +244,7 @@ mod tests {
 
   #[gpui::test]
   fn active_tab_and_index_are_consistent(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
     ws.update(cx, |w, cx| {
       let id = w.active_tab_id().expect("has active tab");
       assert_eq!(w.active_tab().map(|t| t.id), Some(id));
@@ -259,7 +255,7 @@ mod tests {
 
   #[gpui::test]
   fn activate_tab_returns_false_for_unknown(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
     ws.update(cx, |w, cx| {
       let original = w.active_tab_id();
       let ok = w.activate_tab(TabId(9999), cx);
@@ -270,7 +266,7 @@ mod tests {
 
   #[gpui::test]
   fn close_tab_falls_back_to_previous(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
     // 预置两个额外的 tab：直接构造 TabItem 并添加，避免再次创建终端
     ws.update(cx, |w, cx| {
       // 借用现有 tab 的 pane_group 作为占位，仅用于测试 close 索引逻辑
@@ -293,7 +289,7 @@ mod tests {
 
   #[gpui::test]
   fn close_unknown_tab_returns_false(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
     ws.update(cx, |w, cx| {
       assert!(!w.close_tab(TabId(9999), cx));
       assert_eq!(w.tabs().len(), 1);
@@ -301,8 +297,8 @@ mod tests {
   }
 
   #[gpui::test]
-  fn workspace_display_name_and_icon_delegate_to_kind(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Ssh("ssh h".to_string()));
+  fn workspace_display_name_and_icon_delegate_to_spec(cx: &mut TestAppContext) {
+    let ws = make_workspace(cx, WorkspaceSpec::new(WorkspaceMode::Regular, "ssh h"));
     ws.read_with(cx, |w, _| {
       assert_eq!(w.display_name().as_ref(), "ssh h");
     });
@@ -321,7 +317,7 @@ mod tests {
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         pty_dyn,
         cx,
       )
@@ -355,7 +351,7 @@ mod tests {
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         pty_dyn,
         cx,
       )
@@ -388,7 +384,7 @@ mod tests {
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         pty_dyn,
         cx,
       )
@@ -435,7 +431,7 @@ mod tests {
   /// 验证点击 + 按钮（add_terminal_tab_with_fake_pty）后确实创建了新 tab。
   #[gpui::test]
   fn add_terminal_tab_creates_new_tab(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
 
     // 初始状态：1 个 tab
     let initial_count = ws.read_with(cx, |w, _| w.tabs().len());
@@ -465,7 +461,7 @@ mod tests {
   /// 验证多次添加 tab 的行为。
   #[gpui::test]
   fn add_multiple_terminal_tabs(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
 
     // 初始状态：1 个 tab
     assert_eq!(ws.read_with(cx, |w, _| w.tabs().len()), 1);
@@ -493,7 +489,7 @@ mod tests {
   /// 验证添加新 tab 后，每个 tab 都有独立的 pane_group（终端实例）。
   #[gpui::test]
   fn added_tabs_have_independent_pane_groups(cx: &mut TestAppContext) {
-    let ws = make_workspace(cx, WorkspaceKind::Local);
+    let ws = make_workspace(cx, WorkspaceSpec::default());
 
     let first_pane = ws.read_with(cx, |w, _| w.tabs()[0].pane_group.clone());
 
@@ -515,7 +511,7 @@ mod tests {
 
   #[gpui::test]
   fn pane_groups_do_not_keep_workspace_alive(cx: &mut TestAppContext) {
-    let workspace = make_workspace(cx, WorkspaceKind::Local);
+    let workspace = make_workspace(cx, WorkspaceSpec::default());
     let weak_workspace = workspace.downgrade();
 
     drop(workspace);

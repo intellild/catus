@@ -73,16 +73,6 @@ pub struct LocalPty {
 }
 
 impl LocalPty {
-  /// 创建本地 PTY
-  ///
-  /// # Arguments
-  /// * `size` - 终端尺寸
-  /// * `command` - 可选的命令字符串。`None` 启动系统默认 shell；
-  ///   `Some("ssh user@host")` 等会被按空白拆分为程序 + 参数。
-  pub fn new(size: TerminalSize, command: Option<&str>) -> Result<Self> {
-    Self::new_with_command(size, PtyCommand::from_command_line(command))
-  }
-
   /// 使用显式命令创建本地 PTY。
   pub fn new_with_command(size: TerminalSize, command: PtyCommand) -> Result<Self> {
     let pty_system = portable_pty::native_pty_system();

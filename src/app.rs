@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::config::{AppConfig, WorkspaceConfig, default_config_path};
 use crate::workspace::Workspace;
-use crate::workspace_kind::WorkspaceKind;
+use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
 
 /// App 管理多个 Workspace，每个 Workspace 拥有独立的 Tab/Pane/终端集合。
 ///
@@ -24,8 +24,8 @@ pub struct App {
 impl App {
   /// 从默认配置文件创建 App。
   pub fn new(cx: &mut gpui::Context<Self>) -> Self {
-    Self::from_config_with(default_config_path(), cx, |kind, cx| {
-      cx.new(|cx| Workspace::new(kind, cx))
+    Self::from_config_with(default_config_path(), cx, |spec, cx| {
+      cx.new(|cx| Workspace::new(spec, cx))
     })
   }
 
@@ -36,13 +36,13 @@ impl App {
   fn from_config_with(
     path: PathBuf,
     cx: &mut gpui::Context<Self>,
-    spawn_workspace: impl Fn(WorkspaceKind, &mut gpui::App) -> Entity<Workspace>,
+    spawn_workspace: impl Fn(WorkspaceSpec, &mut gpui::App) -> Entity<Workspace>,
   ) -> Self {
     let config = AppConfig::load(&path);
     let mut workspaces = Vec::new();
     for entry in &config.workspaces {
-      let kind = WorkspaceKind::from_command_line(&entry.command);
-      let workspace = spawn_workspace(kind, cx);
+      let spec = WorkspaceSpec::new(entry.mode, &entry.command);
+      let workspace = spawn_workspace(spec, cx);
       if workspace.read(cx).tabs().is_empty() && !workspace.read(cx).is_connecting() {
         warn!(
           target: "catus",
@@ -55,7 +55,7 @@ impl App {
       workspaces.push(workspace);
     }
     if workspaces.is_empty() {
-      let workspace = spawn_workspace(WorkspaceKind::from_command_line(""), cx);
+      let workspace = spawn_workspace(WorkspaceSpec::new(WorkspaceMode::Regular, ""), cx);
       Self::observe_workspace(&workspace, cx);
       workspaces.push(workspace);
     }
@@ -83,19 +83,19 @@ impl App {
   /// 添加一个 Workspace 并设为激活，成功时持久化到配置文件。
   pub fn add_workspace(
     &mut self,
-    kind: WorkspaceKind,
+    spec: WorkspaceSpec,
     cx: &mut gpui::Context<Self>,
   ) -> Result<Entity<Workspace>, String> {
-    self.add_workspace_inner(kind, cx, |kind, cx| cx.new(|cx| Workspace::new(kind, cx)))
+    self.add_workspace_inner(spec, cx, |spec, cx| cx.new(|cx| Workspace::new(spec, cx)))
   }
 
   fn add_workspace_inner(
     &mut self,
-    kind: WorkspaceKind,
+    spec: WorkspaceSpec,
     cx: &mut gpui::Context<Self>,
-    spawn_workspace: impl Fn(WorkspaceKind, &mut gpui::App) -> Entity<Workspace>,
+    spawn_workspace: impl Fn(WorkspaceSpec, &mut gpui::App) -> Entity<Workspace>,
   ) -> Result<Entity<Workspace>, String> {
-    let workspace = spawn_workspace(kind, cx);
+    let workspace = spawn_workspace(spec, cx);
 
     // 终端创建失败时拒绝添加空 workspace
     if workspace.read(cx).tabs().is_empty() && !workspace.read(cx).is_connecting() {
@@ -152,7 +152,8 @@ impl App {
         .workspaces
         .iter()
         .map(|ws| WorkspaceConfig {
-          command: ws.read(cx).kind.to_command_line(),
+          mode: ws.read(cx).spec.mode,
+          command: ws.read(cx).spec.to_command_line(),
         })
         .collect(),
     };
@@ -187,10 +188,10 @@ impl App {
 
   /// 从配置文件创建 App，但 workspace 用 FakePty，避免测试启动真实 shell。
   pub(crate) fn from_config_with_fake_pty(path: PathBuf, cx: &mut gpui::Context<Self>) -> Self {
-    Self::from_config_with(path, cx, |kind, cx| {
+    Self::from_config_with(path, cx, |spec, cx| {
       cx.new(|cx| {
         Workspace::new_with_pty(
-          kind,
+          spec,
           std::sync::Arc::new(crate::terminal::FakePty::new()),
           cx,
         )
@@ -201,13 +202,13 @@ impl App {
   /// 添加使用 FakePty 的 workspace，用于测试配置持久化。
   pub(crate) fn add_workspace_with_fake_pty(
     &mut self,
-    kind: WorkspaceKind,
+    spec: WorkspaceSpec,
     cx: &mut gpui::Context<Self>,
   ) -> Result<Entity<Workspace>, String> {
-    self.add_workspace_inner(kind, cx, |kind, cx| {
+    self.add_workspace_inner(spec, cx, |spec, cx| {
       cx.new(|cx| {
         Workspace::new_with_pty(
-          kind,
+          spec,
           std::sync::Arc::new(crate::terminal::FakePty::new()),
           cx,
         )
@@ -220,12 +221,12 @@ impl App {
 mod tests {
   use super::*;
   use crate::workspace::Workspace;
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
   use gpui::TestAppContext;
 
   /// 创建一个使用 FakePty 的 App（单个本地 workspace）。
   fn make_app(cx: &mut TestAppContext) -> Entity<App> {
-    let ws = cx.new(|cx| Workspace::new_with_fake_pty(WorkspaceKind::Local, cx));
+    let ws = cx.new(|cx| Workspace::new_with_fake_pty(WorkspaceSpec::default(), cx));
     cx.new(|cx| App::with_workspaces(vec![ws], cx))
   }
 
@@ -233,12 +234,12 @@ mod tests {
   fn make_app_with_n(cx: &mut TestAppContext, n: usize) -> Entity<App> {
     let mut workspaces = Vec::new();
     for i in 0..n {
-      let kind = if i == 0 {
-        WorkspaceKind::Local
+      let spec = if i == 0 {
+        WorkspaceSpec::default()
       } else {
-        WorkspaceKind::Ssh(format!("ssh host{}", i))
+        WorkspaceSpec::new(WorkspaceMode::Regular, &format!("ssh host{}", i))
       };
-      workspaces.push(cx.new(|cx| Workspace::new_with_fake_pty(kind, cx)));
+      workspaces.push(cx.new(|cx| Workspace::new_with_fake_pty(spec, cx)));
     }
     cx.new(|cx| App::with_workspaces(workspaces, cx))
   }
@@ -252,8 +253,45 @@ mod tests {
 
   fn workspace_command(entry_command: &str) -> WorkspaceConfig {
     WorkspaceConfig {
+      mode: WorkspaceMode::Regular,
       command: entry_command.to_string(),
     }
+  }
+
+  #[gpui::test]
+  fn saving_and_loading_preserves_backend_and_command(cx: &mut TestAppContext) {
+    let path = temp_config_path("workspace-mode");
+    AppConfig {
+      workspaces: vec![WorkspaceConfig {
+        mode: WorkspaceMode::Regular,
+        command: "tmux -CC attach".into(),
+      }],
+    }
+    .save(&path)
+    .unwrap();
+    let app = cx.new(|cx| App::from_config_with_fake_pty(path.clone(), cx));
+    app.update(cx, |app, cx| {
+      assert_eq!(app.workspaces[0].read(cx).spec.mode, WorkspaceMode::Regular);
+      app
+        .add_workspace_with_fake_pty(
+          WorkspaceSpec::new(WorkspaceMode::Tmux, "/path/to/control-wrapper"),
+          cx,
+        )
+        .unwrap();
+    });
+    let saved = AppConfig::load(&path);
+    assert_eq!(saved.workspaces[0].mode, WorkspaceMode::Regular);
+    assert_eq!(saved.workspaces[1].mode, WorkspaceMode::Tmux);
+    assert_eq!(saved.workspaces[1].command, "/path/to/control-wrapper");
+    let restored = cx.new(|cx| App::from_config_with_fake_pty(path.clone(), cx));
+    restored.read_with(cx, |app, cx| {
+      assert_eq!(app.workspaces[1].read(cx).spec.mode, WorkspaceMode::Tmux);
+      assert_eq!(
+        app.workspaces[1].read(cx).spec.to_command_line(),
+        "/path/to/control-wrapper"
+      );
+    });
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
   }
 
   #[gpui::test]
@@ -268,14 +306,14 @@ mod tests {
     app.read_with(cx, |app, cx| {
       assert_eq!(app.workspaces.len(), 2);
       assert_eq!(app.active_index, Some(0));
-      assert!(matches!(
-        app.workspaces[0].read(cx).kind,
-        WorkspaceKind::Local
-      ));
-      assert!(matches!(
-        app.workspaces[1].read(cx).kind,
-        WorkspaceKind::Ssh(_)
-      ));
+      assert_eq!(
+        app.workspaces[0].read(cx).spec.command,
+        crate::terminal::PtyCommand::DefaultShell
+      );
+      assert_eq!(
+        app.workspaces[1].read(cx).spec.to_command_line(),
+        "ssh host1"
+      );
     });
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
   }
@@ -300,10 +338,10 @@ mod tests {
     let app = cx.new(|cx| App::from_config_with_fake_pty(path.clone(), cx));
     app.read_with(cx, |app, cx| {
       assert_eq!(app.workspaces.len(), 1);
-      assert!(matches!(
-        app.workspaces[0].read(cx).kind,
-        WorkspaceKind::Local
-      ));
+      assert_eq!(
+        app.workspaces[0].read(cx).spec.command,
+        crate::terminal::PtyCommand::DefaultShell
+      );
     });
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
   }
@@ -314,7 +352,10 @@ mod tests {
     let app = cx.new(|cx| App::from_config_with_fake_pty(path.clone(), cx));
     app.update(cx, |app, cx| {
       app
-        .add_workspace_with_fake_pty(WorkspaceKind::Ssh("ssh user@host".into()), cx)
+        .add_workspace_with_fake_pty(
+          WorkspaceSpec::new(WorkspaceMode::Regular, "ssh user@host"),
+          cx,
+        )
         .unwrap();
     });
     assert_eq!(

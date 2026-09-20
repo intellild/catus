@@ -13,7 +13,7 @@ mod terminal;
 mod title_bar;
 mod tmux;
 mod workspace;
-mod workspace_kind;
+mod workspace_spec;
 
 use app::App as CatusApp;
 use main_view::MainView;

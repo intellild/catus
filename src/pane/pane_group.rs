@@ -384,7 +384,7 @@ impl PaneGroup {
     let view = self
       .workspace
       .update(cx, |ws, cx| {
-        Workspace::create_terminal_view_with_pty(cx, pty, ws.kind.default_terminal_title())
+        Workspace::create_terminal_view_with_pty(cx, pty, ws.spec.default_terminal_title())
       })
       .ok()?
       .ok()?;
@@ -467,7 +467,7 @@ mod tests {
   use super::{PaneGroup, SplitDirection};
   use crate::terminal::{FakePty, TerminalViewEvent};
   use crate::workspace::Workspace;
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::WorkspaceSpec;
   use gpui::{AppContext as _, Entity, TestAppContext};
   use std::sync::Arc;
 
@@ -477,7 +477,7 @@ mod tests {
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         pty_dyn,
         cx,
       )
@@ -579,7 +579,7 @@ mod tests {
     let pty_dyn: Arc<dyn crate::terminal::Pty> = fake.clone();
     let ws = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         pty_dyn,
         cx,
       )
@@ -630,7 +630,7 @@ mod tests {
     let first_pty: Arc<dyn crate::terminal::Pty> = first_fake.clone();
     let workspace = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         first_pty,
         cx,
       )

@@ -4,7 +4,7 @@ use crate::pane::{
   any_view::PaneView,
   pane_node::{PaneLeafId, PaneNode, SplitDirection},
 };
-use crate::terminal::{LocalPty, Pty, TerminalSize, TerminalView};
+use crate::terminal::{LocalPty, Pty, PtyCommand, TerminalSize, TerminalView};
 use crate::tmux::{
   client::{ClientEvent, ControlClient, PanePty, RequestKind, response_text},
   layout::{Layout, LayoutKind},
@@ -58,23 +58,11 @@ pub struct TmuxWorkspaceDelegate {
   dirty: bool,
 }
 impl TmuxWorkspaceDelegate {
-  pub fn new(command: &str, cx: &mut Context<Workspace>) -> Self {
-    let mut tmux_command = false;
-    let command = command
-      .split_whitespace()
-      .map(|arg| {
-        tmux_command |= std::path::Path::new(arg)
-          .file_name()
-          .is_some_and(|name| name == "tmux");
-        if tmux_command && arg == "-C" {
-          "-CC"
-        } else {
-          arg
-        }
-      })
-      .collect::<Vec<_>>()
-      .join(" ");
-    match LocalPty::new(TerminalSize::default_size(), Some(&command)) {
+  pub fn new(command: &PtyCommand, cx: &mut Context<Workspace>) -> Self {
+    if matches!(command, PtyCommand::DefaultShell) {
+      return Self::failed("Enter a tmux control mode command.".into());
+    }
+    match LocalPty::new_with_command(TerminalSize::default_size(), command.clone()) {
       Ok(pty) => Self::with_transport(Arc::new(pty), cx),
       Err(error) => Self::failed(error.to_string()),
     }
@@ -511,13 +499,13 @@ impl Drop for TmuxWorkspaceDelegate {
 mod tests {
   use super::*;
   use crate::terminal::{FakePty, flush_pty_output};
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
   use gpui::TestAppContext;
 
   fn workspace(cx: &mut TestAppContext) -> (Entity<Workspace>, Arc<FakePty>) {
     let fake = Arc::new(FakePty::new());
     let ws = cx.new(|cx| Workspace {
-      kind: WorkspaceKind::Tmux("tmux -CC new-session".into()),
+      spec: WorkspaceSpec::new(WorkspaceMode::Tmux, "tmux -CC new-session"),
       delegate: Box::new(TmuxWorkspaceDelegate::with_transport(fake.clone(), cx)),
     });
     (ws, fake)
@@ -693,7 +681,7 @@ mod tests {
 #[cfg(test)]
 mod real_tests {
   use super::*;
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::{WorkspaceMode, WorkspaceSpec};
   use gpui::TestAppContext;
   use std::{
     process::Command,
@@ -741,7 +729,7 @@ mod real_tests {
       "tmux -L {} -f /dev/null -CC new-session -s catus /bin/sh",
       server.0
     );
-    let ws = cx.new(|cx| Workspace::new(WorkspaceKind::from_command_line(&command), cx));
+    let ws = cx.new(|cx| Workspace::new(WorkspaceSpec::new(WorkspaceMode::Tmux, &command), cx));
     wait(cx, |cx| ws.read_with(cx, |ws, _| !ws.tabs().is_empty()));
     let group = ws.read_with(cx, |ws, _| ws.active_tab().unwrap().pane_group.clone());
     let pane = group.read_with(cx, |g, _| g.active_leaf_id_for_test().unwrap());
@@ -818,7 +806,8 @@ mod real_tests {
       "detaching must preserve the session"
     );
     let command = format!("tmux -L {} -CC attach-session -t catus", server.0);
-    let restored = cx.new(|cx| Workspace::new(WorkspaceKind::from_command_line(&command), cx));
+    let restored =
+      cx.new(|cx| Workspace::new(WorkspaceSpec::new(WorkspaceMode::Tmux, &command), cx));
     wait(cx, |cx| {
       restored.read_with(cx, |ws, _| !ws.tabs().is_empty() && ws.status().is_none())
     });

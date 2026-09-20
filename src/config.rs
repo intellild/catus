@@ -8,13 +8,52 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::workspace_spec::WorkspaceMode;
 use serde::{Deserialize, Serialize};
 
 /// 单个 workspace 的配置条目。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredWorkspaceConfig")]
 pub struct WorkspaceConfig {
+  pub mode: WorkspaceMode,
   /// 启动命令。空字符串表示系统默认 shell。
   pub command: String,
+}
+
+// Only legacy entries without `mode` infer the backend from their command.
+// Once saved, the explicit mode always takes precedence, including Regular.
+#[derive(Deserialize)]
+struct StoredWorkspaceConfig {
+  mode: Option<WorkspaceMode>,
+  command: String,
+}
+
+impl From<StoredWorkspaceConfig> for WorkspaceConfig {
+  fn from(stored: StoredWorkspaceConfig) -> Self {
+    let mode = stored.mode.unwrap_or_else(|| {
+      let words: Vec<_> = stored.command.split_whitespace().collect();
+      let tmux = words.iter().position(|word| {
+        std::path::Path::new(word)
+          .file_name()
+          .is_some_and(|name| name == "tmux")
+      });
+      if (words.first() == Some(&"ssh") || tmux == Some(0))
+        && tmux.is_some_and(|i| {
+          words[i + 1..]
+            .iter()
+            .any(|word| matches!(*word, "-C" | "-CC"))
+        })
+      {
+        WorkspaceMode::Tmux
+      } else {
+        WorkspaceMode::Regular
+      }
+    });
+    Self {
+      mode,
+      command: stored.command,
+    }
+  }
 }
 
 /// 应用配置：workspace 启动命令列表。
@@ -29,6 +68,7 @@ impl Default for AppConfig {
   fn default() -> Self {
     Self {
       workspaces: vec![WorkspaceConfig {
+        mode: WorkspaceMode::Regular,
         command: String::new(),
       }],
     }
@@ -109,6 +149,57 @@ mod tests {
   }
 
   #[test]
+  fn explicit_modes_round_trip_independently_of_commands() {
+    let config = AppConfig {
+      workspaces: vec![
+        WorkspaceConfig {
+          mode: WorkspaceMode::Regular,
+          command: "tmux -CC attach".into(),
+        },
+        WorkspaceConfig {
+          mode: WorkspaceMode::Tmux,
+          command: "tmux -CC attach".into(),
+        },
+        WorkspaceConfig {
+          mode: WorkspaceMode::Tmux,
+          command: "/path/to/control-wrapper".into(),
+        },
+      ],
+    };
+    let encoded = toml::to_string(&config).unwrap();
+    assert_eq!(toml::from_str::<AppConfig>(&encoded).unwrap(), config);
+  }
+
+  #[test]
+  fn legacy_commands_migrate_but_explicit_regular_mode_wins() {
+    let config: AppConfig = toml::from_str(
+      r#"
+      [[workspaces]]
+      command = "tmux -CC attach"
+      [[workspaces]]
+      command = "ssh -tt host tmux -CC attach"
+      [[workspaces]]
+      command = "ssh -C host"
+      [[workspaces]]
+      mode = "regular"
+      command = "tmux -CC attach"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+      config.workspaces.iter().map(|w| w.mode).collect::<Vec<_>>(),
+      vec![
+        WorkspaceMode::Tmux,
+        WorkspaceMode::Tmux,
+        WorkspaceMode::Regular,
+        WorkspaceMode::Regular
+      ]
+    );
+    let saved = toml::to_string(&config).unwrap();
+    assert_eq!(toml::from_str::<AppConfig>(&saved).unwrap(), config);
+  }
+
+  #[test]
   fn default_config_has_single_empty_command() {
     let config = AppConfig::default();
     assert_eq!(config.workspaces.len(), 1);
@@ -121,12 +212,15 @@ mod tests {
     let config = AppConfig {
       workspaces: vec![
         WorkspaceConfig {
+          mode: WorkspaceMode::Regular,
           command: String::new(),
         },
         WorkspaceConfig {
+          mode: WorkspaceMode::Regular,
           command: "ssh user@host".into(),
         },
         WorkspaceConfig {
+          mode: WorkspaceMode::Regular,
           command: "/bin/zsh -l".into(),
         },
       ],
@@ -175,7 +269,10 @@ mod tests {
     let path = temp_config_path("format");
     AppConfig::default().save(&path).unwrap();
     let content = fs::read_to_string(&path).unwrap();
-    assert_eq!(content, "[[workspaces]]\ncommand = \"\"\n");
+    assert_eq!(
+      content,
+      "[[workspaces]]\nmode = \"regular\"\ncommand = \"\"\n"
+    );
     let _ = fs::remove_dir_all(path.parent().unwrap());
   }
 }

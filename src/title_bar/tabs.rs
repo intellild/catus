@@ -142,7 +142,7 @@ impl Render for TitleBarTabs {
 mod tests {
   use super::{App, TitleBarTabs, Workspace};
   use crate::terminal::{FakePty, flush_pty_output};
-  use crate::workspace_kind::WorkspaceKind;
+  use crate::workspace_spec::WorkspaceSpec;
   use gpui::{AppContext as _, TestAppContext};
   use std::cell::Cell;
   use std::rc::Rc;
@@ -153,7 +153,7 @@ mod tests {
     let fake = Arc::new(FakePty::new());
     let workspace = cx.new(|cx| {
       Workspace::new_with_pty(
-        WorkspaceKind::local_program("/bin/zsh", std::iter::empty::<&str>()),
+        WorkspaceSpec::local_program("/bin/zsh", std::iter::empty::<&str>()),
         fake.clone(),
         cx,
       )
