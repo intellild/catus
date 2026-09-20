@@ -4,6 +4,7 @@ use tracing::info;
 
 mod add_workspace_dialog;
 mod app;
+mod config;
 mod logging;
 mod main_view;
 mod pane;

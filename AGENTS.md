@@ -22,11 +22,12 @@ Catus 是一个基于 Rust 和 GPUI 的本地终端客户端。当前代码已�
 ## 关键目录
 
 - `src/main.rs`: 应用初始化、主题设置、全局 key binding。
-- `src/app.rs`: 应用级状态，持有多个 `Workspace` 与激活索引。
-- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `Ssh`），决定 workspace 的图标、展示名和 PTY 启动命令。
+- `src/app.rs`: 应用级状态，持有多个 `Workspace` 与激活索引；启动时从 TOML 配置创建 workspace 列表，增删时写回。
+- `src/config.rs`: TOML 配置（`~/.config/catus/config.toml`）读写；文件缺失时写默认配置，解析失败不覆盖原文件。
+- `src/workspace_kind.rs`: `WorkspaceKind`（`Local` / `LocalProgram` / `Ssh`），决定 workspace 的图标、展示名和 PTY 启动命令；`from_command_line` / `to_command_line` 负责与配置、对话框的命令字符串互转。
 - `src/workspace.rs`: 单个 `Workspace`：Tab 管理和终端实体创建，按 `kind.command()` 创建 PTY。
-- `src/sidebar/mod.rs`: 左侧 `WorkspaceSidebar`，列出 workspace 列表、切换/关闭/新增。
-- `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，选择类型并填写命令。
+- `src/sidebar/mod.rs`: 左侧 `WorkspaceSidebar`，列出 workspace 图标、切换/关闭/新增。
+- `src/add_workspace_dialog.rs`: 「添加 Workspace」对话框，编辑启动命令（默认当前用户默认 shell）。
 - `src/main_view.rs`: 主视图，组合侧边栏与当前 workspace 的 title bar + pane 区，render 时从 `App` 解析激活的 workspace。
 - `src/pane/`: Pane tree、分割和关闭逻辑。
 - `src/terminal/model.rs`: `Terminal` 协调器，连接 PTY、alacritty 状态和渲染状态。

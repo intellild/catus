@@ -8,10 +8,20 @@ use crate::add_workspace_dialog::open_add_workspace_dialog;
 use crate::app::App;
 
 /// 左侧侧边栏：纵向排列的 Workspace 图标栏。
-/// 每行仅显示图标；名称等文字描述通过 hover 触发的 popover（tooltip）展示。
+/// 每行仅显示图标；名称等文字描述通过 hover 触发的 popover（tooltip）展示；
+/// 有 tab 的 workspace 在图标左侧显示 dock 风格小圆点。
 /// 底部有一个 `+` 按钮用于打开「添加 Workspace」面板。
 pub struct WorkspaceSidebar {
   app: Entity<App>,
+}
+
+/// 侧边栏单行（单个 workspace）的展示数据。
+struct SidebarRow {
+  index: usize,
+  is_active: bool,
+  has_tabs: bool,
+  name: SharedString,
+  icon: IconName,
 }
 
 impl WorkspaceSidebar {
@@ -43,13 +53,17 @@ impl WorkspaceSidebar {
 
   fn render_row(
     &self,
-    index: usize,
-    is_active: bool,
-    name: SharedString,
-    icon: IconName,
+    row: SidebarRow,
     closeable: bool,
     cx: &mut Context<Self>,
   ) -> impl IntoElement {
+    let SidebarRow {
+      index,
+      is_active,
+      has_tabs,
+      name,
+      icon,
+    } = row;
     let theme = cx.theme();
     let group_name = format!("ws-row-{}", index);
     let mut row = div()
@@ -78,7 +92,23 @@ impl WorkspaceSidebar {
       )
       // 文字描述收到 hover 触发的 popover（tooltip）里。
       .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
-      .child(Icon::new(icon).with_size(px(16.)));
+      .child(Icon::new(icon).with_size(px(16.)))
+      // dock 风格小圆点：workspace 有 tab 时显示在图标左侧、垂直居中。
+      .when(has_tabs, |this| {
+        this.child(
+          div()
+            .absolute()
+            .top(px(16.))
+            .left(px(3.))
+            .size(px(4.))
+            .rounded_full()
+            .bg(if is_active {
+              theme.accent_foreground
+            } else {
+              theme.foreground
+            }),
+        )
+      });
 
     // 关闭按钮：始终保留至少一个 Workspace，因此仅在有多个时显示。
     // 行内没有放置文字的空间，关闭按钮以角标形式悬浮在行的右上角，
@@ -127,18 +157,19 @@ impl Render for WorkspaceSidebar {
     let (rows, sidebar_bg, sidebar_border) = {
       let app = self.app.read(cx);
       let theme = cx.theme();
-      let rows: Vec<(usize, bool, SharedString, IconName)> = app
+      let rows: Vec<SidebarRow> = app
         .workspaces
         .iter()
         .enumerate()
         .map(|(index, workspace)| {
           let ws = workspace.read(cx);
-          (
+          SidebarRow {
             index,
-            app.active_index == Some(index),
-            ws.display_name(),
-            ws.icon(),
-          )
+            is_active: app.active_index == Some(index),
+            has_tabs: !ws.tabs.is_empty(),
+            name: ws.display_name(),
+            icon: ws.icon(),
+          }
         })
         .collect();
       (rows, theme.secondary, theme.border)
@@ -147,12 +178,8 @@ impl Render for WorkspaceSidebar {
 
     // 在进入元素构建链之前，先把每行渲染成 AnyElement，避免在 .children() 闭包里持续借用 self/cx。
     let mut row_elements: Vec<AnyElement> = Vec::with_capacity(rows.len());
-    for (index, is_active, name, icon) in rows {
-      row_elements.push(
-        self
-          .render_row(index, is_active, name, icon, closeable, cx)
-          .into_any_element(),
-      );
+    for row in rows {
+      row_elements.push(self.render_row(row, closeable, cx).into_any_element());
     }
 
     div()

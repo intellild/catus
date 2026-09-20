@@ -157,7 +157,8 @@ fn build_command(command: &PtyCommand) -> CommandBuilder {
   }
 }
 
-fn default_shell_program() -> String {
+/// 当前用户默认 shell 的程序路径（`$SHELL`，回退 `/bin/sh`）。
+pub(crate) fn default_shell_program() -> String {
   #[cfg(target_os = "windows")]
   {
     "cmd.exe".to_string()

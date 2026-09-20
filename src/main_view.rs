@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::ActiveTheme;
+use gpui_component::{ActiveTheme, Root};
 
 use crate::app::App;
 use crate::sidebar::WorkspaceSidebar;
@@ -32,7 +32,7 @@ impl MainView {
 }
 
 impl Render for MainView {
-  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = cx.theme();
     let app = self.app.read(cx);
     let active_workspace: Option<&Entity<Workspace>> = app.active_workspace();
@@ -62,5 +62,9 @@ impl Render for MainView {
             |pg| div().size_full().child(pg),
           ))),
       )
+      // 「添加 Workspace」对话框与错误通知由 Root 统一管理，
+      // 必须在 Root 的子视图里渲染对应图层，否则 open_dialog 不可见。
+      .children(Root::render_dialog_layer(window, cx))
+      .children(Root::render_notification_layer(window, cx))
   }
 }

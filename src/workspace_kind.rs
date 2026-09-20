@@ -27,6 +27,38 @@ impl WorkspaceKind {
     }
   }
 
+  /// 从启动命令字符串解析 workspace 类型，供 TOML 配置与「添加 Workspace」对话框共用。
+  ///
+  /// - 空白 → 默认本地 workspace（系统默认 shell，受 `CATUS_LOCAL_PTY_PROGRAM` 覆盖）。
+  /// - 首个词是 `ssh` → SSH workspace。
+  /// - 其他 → 启动指定本地程序的 workspace。
+  pub fn from_command_line(command: &str) -> Self {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+      return default_local_kind();
+    }
+    let mut parts = trimmed.split_whitespace();
+    let program = parts.next().expect("non-empty after trim");
+    if program == "ssh" {
+      Self::Ssh(trimmed.to_string())
+    } else {
+      Self::local_program(program, parts)
+    }
+  }
+
+  /// 序列化为启动命令字符串，与 [`WorkspaceKind::from_command_line`] 互逆，
+  /// 用于写回 TOML 配置。
+  pub fn to_command_line(&self) -> String {
+    match self {
+      Self::Local => String::new(),
+      Self::LocalProgram { program, args } => std::iter::once(program.as_str())
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" "),
+      Self::Ssh(cmd) => cmd.trim().to_string(),
+    }
+  }
+
   /// 侧边栏展示用的图标。
   pub fn icon(&self) -> IconName {
     match self {
@@ -63,7 +95,9 @@ impl WorkspaceKind {
   /// 侧边栏展示用的名称。
   pub fn display_name(&self) -> SharedString {
     match self {
-      WorkspaceKind::Local | WorkspaceKind::LocalProgram { .. } => "Local".into(),
+      WorkspaceKind::Local => "Local".into(),
+      // 自定义程序 workspace 展示完整命令行。
+      WorkspaceKind::LocalProgram { .. } => self.to_command_line().into(),
       WorkspaceKind::Ssh(cmd) => {
         // 去掉首尾空白后展示命令本身（例如 "ssh user@host"），
         // 若用户只填了 "ssh" 则退化为 "SSH"。
@@ -76,6 +110,32 @@ impl WorkspaceKind {
       }
     }
   }
+}
+
+/// 空命令时的默认本地 workspace 类型。
+///
+/// 默认启动系统默认 shell；`CATUS_LOCAL_PTY_PROGRAM`（参数用
+/// `CATUS_LOCAL_PTY_ARGS` 传 JSON 数组）可覆盖为指定程序，供 e2e 测试使用。
+fn default_local_kind() -> WorkspaceKind {
+  let Ok(program) = std::env::var("CATUS_LOCAL_PTY_PROGRAM") else {
+    return WorkspaceKind::Local;
+  };
+
+  let program = program.trim().to_string();
+  if program.is_empty() {
+    return WorkspaceKind::Local;
+  }
+
+  let args_json = std::env::var("CATUS_LOCAL_PTY_ARGS").ok();
+  let args = parse_local_pty_args(args_json.as_deref());
+
+  WorkspaceKind::local_program(program, args)
+}
+
+fn parse_local_pty_args(args_json: Option<&str>) -> Vec<String> {
+  args_json
+    .and_then(|args| serde_json::from_str(args).ok())
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -139,13 +199,98 @@ mod tests {
   }
 
   #[test]
-  fn local_program_display_name_is_local() {
+  fn local_program_display_name_shows_command_line() {
     assert_eq!(
       WorkspaceKind::local_program("node", ["script.js"])
         .display_name()
         .as_ref(),
-      "Local"
+      "node script.js"
     );
+  }
+
+  #[test]
+  fn empty_command_yields_local() {
+    assert!(matches!(
+      WorkspaceKind::from_command_line(""),
+      WorkspaceKind::Local
+    ));
+    assert!(matches!(
+      WorkspaceKind::from_command_line("   "),
+      WorkspaceKind::Local
+    ));
+  }
+
+  #[test]
+  fn ssh_first_word_maps_to_ssh_kind() {
+    match WorkspaceKind::from_command_line("ssh user@host") {
+      WorkspaceKind::Ssh(cmd) => assert_eq!(cmd, "ssh user@host"),
+      other => panic!("expected Ssh variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn ssh_only_command_maps_to_ssh_kind() {
+    assert!(matches!(
+      WorkspaceKind::from_command_line("ssh"),
+      WorkspaceKind::Ssh(_)
+    ));
+  }
+
+  #[test]
+  fn ssh_prefixed_program_is_not_ssh() {
+    // "ssh-keygen" 是普通程序，不应识别为 SSH workspace。
+    match WorkspaceKind::from_command_line("ssh-keygen -l key.pub") {
+      WorkspaceKind::LocalProgram { program, args } => {
+        assert_eq!(program, "ssh-keygen");
+        assert_eq!(args, vec!["-l".to_string(), "key.pub".to_string()]);
+      }
+      other => panic!("expected LocalProgram variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn command_with_args_maps_to_local_program() {
+    match WorkspaceKind::from_command_line("  /bin/zsh -l  ") {
+      WorkspaceKind::LocalProgram { program, args } => {
+        assert_eq!(program, "/bin/zsh");
+        assert_eq!(args, vec!["-l".to_string()]);
+      }
+      other => panic!("expected LocalProgram variant, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn command_line_round_trips() {
+    for command in [
+      "",
+      "ssh",
+      "ssh user@host",
+      "/bin/zsh -l",
+      "node script.js --flag two words",
+    ] {
+      assert_eq!(
+        WorkspaceKind::from_command_line(command).to_command_line(),
+        command,
+        "round-trip failed for {command:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn local_pty_args_json_preserves_argument_boundaries() {
+    let args = parse_local_pty_args(Some(r#"["/path with spaces/echo.js","--label=two words"]"#));
+    assert_eq!(
+      args,
+      vec![
+        "/path with spaces/echo.js".to_string(),
+        "--label=two words".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn invalid_local_pty_args_json_falls_back_to_no_arguments() {
+    assert!(parse_local_pty_args(Some("not json")).is_empty());
   }
 
   #[test]
